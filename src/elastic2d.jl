@@ -1,6 +1,0 @@
-include("kernel/elastic2d/update_stress.jl")
-include("kernel/elastic2d/update_velocity.jl")
-include("kernel/HABC/update_HABC.jl")
-include("kernel/source.jl")
-include("kernel/reciever.jl")
-include("simulator/el2d_simulator.jl")

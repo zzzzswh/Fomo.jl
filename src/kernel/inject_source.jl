@@ -4,21 +4,22 @@
 
 # 核心计算内核：只负责根据索引把值加进去
 function _inject_field_at_kernel!(field, wavelet, sx, sz, k::Int32, n_src::Int32)
-    # 修复 1i32 为 1
     idx = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
 
     if idx <= n_src
         @inbounds begin
-            # 修复坐标顺序：第一个索引应为z方向，第二个索引应为x方向
-            j0 = sx[idx]  # x坐标作为第二个索引（列）
-            i0 = sz[idx]  # z坐标作为第一个索引（行）
+            # 【修复】：现在 field 是 (nx, nz)，所以第一维是 x (sx)，第二维是 z (sz)
+            ix = sx[idx]
+            iz = sz[idx]
 
             # 从 wavelet 读出当前时刻 k 的值
-            # 假设 wavelet 的维度是 [n_src, nt] 或 [nt, n_src]
-            # 注意：在 GPU 上，第一维是最快变化的，尽量保证连续访问
+            # 【点赞】：你这里的 wavelet[idx, k] 写得非常完美！
+            # 因为 idx 是当前线程号，在 Julia 的列主序下，第一维是最快变化的，
+            # 这保证了 GPU 的合并访存 (Coalesced Memory Access)，读取效率拉满。
             wav = wavelet[idx, k]
 
-            field[i0, j0] += wav
+            # 注入震源（比如加到速度场或应力场）
+            field[ix, iz] += wav
         end
     end
     return nothing

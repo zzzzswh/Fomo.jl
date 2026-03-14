@@ -11,20 +11,18 @@ function init_medium(vp::Matrix, vs::Matrix, rho::Matrix,
     M = fd_order ÷ 2
     pad = nbc + M
 
-    vp_t = permutedims(vp)
-    vs_t = permutedims(vs)
-    rho_t = permutedims(rho)
-
-    nx_inner, nz_inner = size(vp_t)
+    # 直接使用原始输入的维度，不再进行转置
+    nx_inner, nz_inner = size(vp)
     nx = nx_inner + 2 * pad
     nz = nz_inner + 2 * pad
 
     x_max = Float32((nx_inner - 1) * dh)
     z_max = Float32((nz_inner - 1) * dh)
 
-    vp_pad = _pad_array(vp_t, pad)
-    vs_pad = _pad_array(vs_t, pad)
-    rho_pad = _pad_array(rho_t, pad)
+    # 直接对外扩函数传入原始矩阵
+    vp_pad = _pad_array(vp, pad)
+    vs_pad = _pad_array(vs, pad)
+    rho_pad = _pad_array(rho, pad)
 
     lam, mu_txx, mu_txz, buoy_vx, buoy_vz, lam_2mu = _compute_staggered_params_optimized(vp_pad, vs_pad, rho_pad)
 
@@ -114,45 +112,4 @@ function _compute_staggered_params_optimized(vp, vs, rho)
     return lam, mu, mu_txz, buoy_vx, buoy_vz, lam_2mu
 end
 
-"""
-    init_habc(nx, nz, nbc, pad, dt, dh, v_ref)
 
-Initialize HABC (双语说明/Bilingual):
-Initialize HABC. 初始化HABC。
-"""
-function init_habc(nx::Int, nz::Int, nbc::Int, pad::Int, dt::Real, dh::Real,
-    v_ref::Real)
-    return HABC(nx, nz, nbc, pad, Float32(dt), Float32(dh), Float32(v_ref))
-end
-
-"""
-    init_habc(nx, nz, nbc, dt, dh, v_ref)
-
-Initialize HABC (双语说明/Bilingual):
-Initialize HABC. 初始化HABC。
-"""
-function init_habc(nx::Int, nz::Int, nbc::Int, dt::Real, dh::Real,
-    v_ref::Real)
-    pad = nbc + 4
-    return init_habc(nx, nz, nbc, pad, dt, dh, v_ref)
-end
-
-"""
-    setup_receivers(x, z, M; type=:vz)
-
-Setup Receivers (双语说明/Bilingual):
-Setup Receivers. 设置接收器。
-"""
-function setup_receivers(x::Vector{<:Real}, z::Vector{<:Real}, M::Medium; type::Symbol=:vz)
-    n = length(x)
-    i_rec = Vector{Int}(undef, n)
-    j_rec = Vector{Int}(undef, n)
-
-    for r in 1:n
-        i_rec[r] = round(Int, x[r] / M.dh) + M.pad + 1
-        j_rec[r] = round(Int, z[r] / M.dh) + M.pad + 1
-    end
-
-    data = zeros(Float32, 1, n)
-    return ReceiverConfig(to_device(i_rec), to_device(j_rec), to_device(data), type)
-end

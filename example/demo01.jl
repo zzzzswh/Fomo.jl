@@ -5,11 +5,14 @@ using Printf
 using StaticArrays
 using CUDA
 
-@init_parallel_stencil(CUDA, Float32, 2)
+# 移除这一行，因为在模块内部已经初始化了
+# @init_parallel_stencil(CUDA, Float32, 2)
 
+# 直接包含本地开发的包
 include("../src/Fomo_gpu.jl")
+using .Fomo_gpu
 
-nx = 200
+nx = 300
 nz = 200
 dh = 10.0f0
 dz = 10.0f0
@@ -118,4 +121,4 @@ plot_shot(combined_seis, "combined_seis.png")
 # ==============================================================================
 println("Generating wavefield video...")
 
-plot_wavefield_video(snaps, p.snapshot_interval, "wavefield.mp4", fps=10)
+plot_wavefield_video(snaps, 50, "wavefield.mp4", fps=10)
