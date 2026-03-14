@@ -1,0 +1,192 @@
+# ==============================================================================
+# types/model.jl
+#
+# VelocityModel structure and basic operations
+# ==============================================================================
+
+"""
+    VelocityModel
+
+Standard internal representation for velocity models.
+速度模型的标准内部表示。
+
+# Fields / 字段
+- `vp::Matrix{Float32}`: P-wave velocity matrix [nz, nx] (m/s).
+  纵波速度矩阵 [nz, nx]（米/秒）。
+- `vs::Matrix{Float32}`: S-wave velocity matrix [nz, nx] (m/s).
+  横波速度矩阵 [nz, nx]（米/秒）。
+- `rho::Matrix{Float32}`: Density matrix [nz, nx] (kg/m³).
+  密度矩阵 [nz, nx]（千克/立方米）。
+- `dh::Float32`: Grid spacing in X and Z directions (m).
+  X 和 Z 方向网格间距（米）。
+- `nx::Int`: Number of grid points in X.
+  X 方向网格点数。
+- `nz::Int`: Number of grid points in Z (depth).
+  Z 方向（深度）网格点数。
+- `x_origin::Float32`: X origin coordinate (default 0).
+  X 原点坐标（默认 0）。
+- `z_origin::Float32`: Z origin coordinate (default 0).
+  Z 原点坐标（默认 0）。
+- `name::String`: Model identifier name.
+  模型标识名称。
+
+# Note / 注意
+Seismic convention: data is stored as `field[nz, nx]` (depth first).
+地震约定：数据存储为 `field[nz, nx]`（深度优先）。
+"""
+struct VelocityModel
+  vp::Matrix{Float32}     # P-wave velocity
+  vs::Matrix{Float32}     # S-wave velocity  
+  rho::Matrix{Float32}    # Density
+  dh::Float32             # Grid spacing in X and Z
+  nx::Int                 # Grid points in X
+  nz::Int                 # Grid points in Z
+  x_origin::Float32       # X origin (default 0)
+  z_origin::Float32       # Z origin (default 0)
+  name::String            # Model name
+end
+
+"""
+    VelocityModel(vp, vs, rho, dh; x_origin=0, z_origin=0, name="unnamed")
+
+Construct a VelocityModel with auto-computed dimensions.
+构造速度模型，自动计算网格维度。
+
+# Arguments / 参数
+- `vp`: P-wave velocity matrix [nz, nx] (m/s). 纵波速度矩阵。
+- `vs`: S-wave velocity matrix [nz, nx] (m/s). 横波速度矩阵。
+- `rho`: Density matrix [nz, nx] (kg/m³). 密度矩阵。
+- `dh`: Grid spacing in X and Z (m). X 和 Z 方向网格间距。
+
+# Keyword Arguments / 关键字参数
+- `x_origin`: X origin coordinate. X 原点坐标，默认 0。
+- `z_origin`: Z origin coordinate. Z 原点坐标，默认 0。
+- `name`: Model name. 模型名称，默认 "unnamed"。
+
+# Example / 示例
+```julia
+vp = fill(3000.0f0, 200, 400)  # [nz, nx]
+vs = fill(1800.0f0, 200, 400)
+rho = fill(2200.0f0, 200, 400)
+
+model = VelocityModel(vp, vs, rho, 10.0f0; name="simple_model")
+```
+"""
+function VelocityModel(vp, vs, rho, dh;
+  x_origin=0.0f0, z_origin=0.0f0, name="unnamed")
+  nz, nx = size(vp)  # Seismic convention: depth is first dimension
+  @assert size(vs) == (nz, nx) "vs size mismatch: got $(size(vs)), expected ($nz, $nx)"
+  @assert size(rho) == (nz, nx) "rho size mismatch: got $(size(rho)), expected ($nz, $nx)"
+
+  VelocityModel(
+    Float32.(vp), Float32.(vs), Float32.(rho),
+    Float32(dh), nx, nz,
+    Float32(x_origin), Float32(z_origin), name
+  )
+end
+
+"""
+    model_info(model::VelocityModel)
+
+Print model information.
+"""
+function model_info(model::VelocityModel)
+  println("VelocityModel: $(model.name)")
+  println("  Grid: $(model.nx) × $(model.nz)")
+  println("  Spacing: dh=$(model.dh)m")
+  println("  Physical size: $(model.nx * model.dh)m × $(model.nz * model.dh)m")
+  println("  Vp range: $(minimum(model.vp)) - $(maximum(model.vp)) m/s")
+  println("  Vs range: $(minimum(model.vs)) - $(maximum(model.vs)) m/s")
+  println("  Rho range: $(minimum(model.rho)) - $(maximum(model.rho)) kg/m³")
+end
+
+"""
+    suggest_grid_spacing(vp_min, freq_max; ppw=10)
+
+Suggest grid spacing based on minimum velocity and maximum frequency.
+
+# Arguments
+- `vp_min`: Minimum P-wave velocity in model
+- `freq_max`: Maximum frequency of source wavelet
+- `ppw`: Points per wavelength (default: 10, recommended: 8-15)
+
+# Returns
+- Suggested grid spacing
+"""
+function suggest_grid_spacing(vp_min::Real, freq_max::Real; ppw::Int=10)
+  wavelength_min = vp_min / freq_max
+  dx_suggested = wavelength_min / ppw
+  return dx_suggested
+end
+
+"""
+    resample_model(model::VelocityModel, new_dh) -> VelocityModel
+
+Resample model to new grid spacing using bilinear interpolation.
+The model has uniform grid spacing dh in both X and Z directions.
+
+# Arguments
+- `model`: Input VelocityModel to resample
+- `new_dh`: New uniform grid spacing for both X and Z directions
+
+# Returns
+- New VelocityModel with resampled grid
+"""
+function resample_model(model::VelocityModel, new_dh::Real)
+  # Compute new dimensions
+  Lx = (model.nx - 1) * model.dh
+  Lz = (model.nz - 1) * model.dh
+
+  new_nx = round(Int, Lx / new_dh) + 1
+  new_nz = round(Int, Lz / new_dh) + 1
+
+  # Create interpolation grids
+  old_x = range(0, Lx, length=model.nx)
+  old_z = range(0, Lz, length=model.nz)
+  new_x = range(0, Lx, length=new_nx)
+  new_z = range(0, Lz, length=new_nz)
+
+  # Resample each field
+  vp_new = _bilinear_resample(model.vp, old_x, old_z, new_x, new_z)
+  vs_new = _bilinear_resample(model.vs, old_x, old_z, new_x, new_z)
+  rho_new = _bilinear_resample(model.rho, old_x, old_z, new_x, new_z)
+
+  return VelocityModel(vp_new, vs_new, rho_new, Float32(new_dh);
+    x_origin=model.x_origin, z_origin=model.z_origin,
+    name="$(model.name)_resampled")
+end
+
+"""
+Simple bilinear interpolation for 2D arrays.
+"""
+function _bilinear_resample(data::Matrix{Float32}, old_x, old_z, new_x, new_z)
+  nz_old, nx_old = size(data)
+  nz_new, nx_new = length(new_z), length(new_x)
+
+  result = zeros(Float32, nz_new, nx_new)
+
+  for (j, x) in enumerate(new_x)
+    for (i, z) in enumerate(new_z)
+      # Find surrounding indices in old grid
+      fx = (x - old_x[1]) / (old_x[2] - old_x[1]) + 1
+      fz = (z - old_z[1]) / (old_z[2] - old_z[1]) + 1
+
+      i0 = clamp(floor(Int, fz), 1, nz_old - 1)
+      j0 = clamp(floor(Int, fx), 1, nx_old - 1)
+      i1 = i0 + 1
+      j1 = j0 + 1
+
+      # Interpolation weights
+      wz = fz - i0
+      wx = fx - j0
+
+      # Bilinear interpolation
+      result[i, j] = (1 - wz) * (1 - wx) * data[i0, j0] +
+                     (1 - wz) * wx * data[i0, j1] +
+                     wz * (1 - wx) * data[i1, j0] +
+                     wz * wx * data[i1, j1]
+    end
+  end
+
+  return result
+end
