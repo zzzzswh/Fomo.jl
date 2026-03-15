@@ -5,8 +5,8 @@ function _run_core!(W, M, S, R, H, dt, nt, a_static, inner_nx, inner_nz, seis_vx
 
     # 用于记录快照存到了第几个
     snap_idx = 1
-
-    @showprogress 1 "Simulation: " for it in 1:nt
+    p = Progress(nt, 1, "Simulation: ")
+    for it in 1:nt
         # A update_velocity
         backup_boundary!(W, H, M)
         # ⚠️ 注意：这里去掉了 p，改传 dt。
@@ -32,6 +32,10 @@ function _run_core!(W, M, S, R, H, dt, nt, a_static, inner_nx, inner_nz, seis_vx
             # 在 GPU 上进行切片，然后再传回 CPU (Array)，减少总传输量
             snaps[snap_idx] = Array(W.vz[pad+1:end-pad, pad+1:end-pad])
             snap_idx += 1
+        end
+
+        if it % 100 == 0
+            ProgressMeter.update!(p, it)
         end
     end
 end

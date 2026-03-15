@@ -12,7 +12,7 @@ using CUDA
 include("../src/Fomo_gpu.jl")
 using .Fomo_gpu
 
-nx = 300
+nx = 400
 nz = 200
 dh = 10.0f0
 nt = 2000
@@ -47,6 +47,33 @@ p_vp = heatmap(1:nx, 1:nz, vp',
 )
 savefig(p_vp, "vp_model_check.png")
 
+
+# CFL check
+println("\n[Diagnostics] Checking CFL stability condition...")
+v_max = maximum(vp)
+
+# 8阶交错网格有限差分系数绝对值之和近似为 1.196
+# (c1=1225/1024, c2=-245/3072, c3=49/5120, c4=-5/7168)
+coef_sum_8th = 1.19625f0
+
+# 2D CFL 极限时间步长公式
+dt_max = dh / (v_max * sqrt(2.0f0) * coef_sum_8th)
+
+@printf("  -> Max Velocity (Vp): %8.2f m/s\n", v_max)
+@printf("  -> Grid spacing (dh): %8.2f m\n", dh)
+@printf("  -> Current dt:        %8.6f s\n", dt)
+@printf("  -> Max allowed dt:    %8.6f s\n", dt_max)
+
+if dt > dt_max
+    println()
+    @error "💥 CFL CONDITION VIOLATED! 💥"
+    @error "Your dt ($dt) is larger than the theoretical stability limit ($dt_max)."
+    @error "The simulation will become unstable and generate NaNs."
+    @error "Please either decrease `dt` to be <= $dt_max or increase `dh`."
+    error("Simulation aborted due to CFL violation.") # 直接中断程序运行
+else
+    println("  -> CFL check passed! ✅\n")
+end
 
 println("Initializing ...")
 
