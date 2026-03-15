@@ -12,8 +12,8 @@ using CUDA
 include("../src/Fomo_gpu.jl")
 using .Fomo_gpu
 
-nx = 400
-nz = 200
+nx = 4000
+nz = 2000
 dh = 10.0f0
 nt = 2000
 dt = 0.001f0
