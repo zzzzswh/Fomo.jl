@@ -1,6 +1,4 @@
-# ==============================================================================
-# Source Injection (CUDA Optimized)
-# ==============================================================================
+# src/kernel/inject_source.jl
 
 # 核心计算内核：只负责根据索引把值加进去
 function _inject_field_at_kernel!(field, wavelet, sx, sz, k::Int32, n_src::Int32)

@@ -1,32 +1,48 @@
 using Plots
 using Statistics
 
+# 设置无头模式（静默运行，防止绘图时弹出窗口）
+ENV["GKSwstype"] = "100"
+gr()
+
 """
-    plot_shot(shot, save_path)
+    plot_shot(shot::AbstractMatrix{<:Real}, save_path::AbstractString)
+
+Plot a seismic shot record as a heatmap and save it to the specified path. 
+Gracefully handles `NaN` values and executes in headless mode.
+
+# Arguments
+- `shot::AbstractMatrix{<:Real}`: The 2D array representing the shot record.
+- `save_path::AbstractString`: The destination file path for the saved image.
+
+# Example
+```julia
+shot_data = randn(Float32, 1000, 100)
+plot_shot(shot_data, "output/shot_record.png")
 """
-function plot_shot(shot, save_path)
-    # 1. 发现 NaN，报个信，但绝不罢工
-    has_nan = any(isnan.(shot))
+function plot_shot(shot::AbstractMatrix{<:Real}, save_path::AbstractString)
+    # 1. 检测 NaN
+    has_nan = any(isnan, shot)
     if has_nan
-        println(">>> ⚠️ 警告：检测到 NaN！正在强行绘图，帮你看看是在哪里爆炸的...")
+        @warn "NaN values detected in the shot record. Plotting with available data to identify issues..."
     end
 
-    # 2. 把正常的数字挑出来，仅仅是为了计算合适的色阶
+    # 2. 提取有效数据以计算色阶
     valid_data = filter(!isnan, shot)
-
-    # 如果连一个正常数字都没有（比如第一步就炸了），那就真画不出来了
     if isempty(valid_data)
-        println(">>> ❌ 彻底没救了：全屏全是 NaN，一个正常数字都没有，画不了图！")
+        @error "The shot record contains only NaNs. Plotting aborted."
         return
     end
 
+    # 动态计算色阶，并保持类型稳定
     scale = quantile(abs.(valid_data), 0.98)
-    scale = scale == 0.0f0 ? eps(Float32) : scale
+    scale = iszero(scale) ? eps(typeof(scale)) : scale
 
-    # 3. 强行把原始数据 shot' (含 NaN) 扔给 heatmap 画图！
-    # NaN 区域通常会显示为空白或超出色带的颜色
-    p = heatmap(shot',
-        title=has_nan ? "Shot Record (EXPLODED)" : "Shot Record",
+    # 3. 绘制并保存热力图
+    # 注意: 此处使用 shot'，假设输入矩阵为 (Time, Receiver) 以匹配常规视觉习惯
+    p = heatmap(
+        shot',
+        title=has_nan ? "Shot Record (NaNs Detected)" : "Shot Record",
         xlabel="Receiver Number",
         ylabel="Time Step",
         color=:seismic,
@@ -37,5 +53,5 @@ function plot_shot(shot, save_path)
     )
 
     savefig(p, save_path)
-    println(">>> 成功保存图纸至: $save_path")
+    @info "Shot record successfully saved to: $save_path"
 end

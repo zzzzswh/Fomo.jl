@@ -1,3 +1,4 @@
+# src/kernels/elastic2d/update_velocity.jl
 using ParallelStencil
 using ParallelStencil.FiniteDifferences2D
 using StaticArrays
@@ -41,18 +42,23 @@ Using @parallel_indices without any if branches, mapping to internal grid via in
 end
 
 """
-    update_velocity!(W, M_med, a_static::SVector{M, Float32}, p, inner_nx::Int, inner_nz::Int) where {M}
+    update_velocity!(W, M_med, a_static::SVector{M, Float32}, dt, inner_nx::Int, inner_nz::Int) where {M}
 
 Velocity update API (双语说明/Bilingual).
 Top-level velocity update API. 顶层速度更新 API。
 Note: The input a_static must already be of SVector type, inner_nx/nz pre-calculated outside the loop.
 注意：传入的 a_static 必须已经是 SVector 类型，inner_nx/nz 在循环外预先计算。
 """
-function update_velocity!(W, M_med, a_static::SVector{M,Float32}, p, inner_nx::Int, inner_nz::Int) where {M}
+function update_velocity!(W, M_med, a_static::SVector{M,Float32}, dt, inner_nx::Int, inner_nz::Int) where {M}
+    # 动态计算 dtx 和 dtz (假设介质中存储了空间步长 dh)
+    # 如果你的 M_med 中有独立的 dx 和 dz，可以分别替换 M_med.dh
+    dtx = Float32(dt / M_med.dh)
+    dtz = Float32(dt / M_med.dh)
+
     @parallel (1:inner_nx, 1:inner_nz) update_velocity_kernel!(
         W.vx, W.vz, W.txx, W.tzz, W.txz,
         M_med.buoy_vx, M_med.buoy_vz,
-        a_static, p.dtx, p.dtz, M
+        a_static, dtx, dtz, M
     )
 
     return nothing

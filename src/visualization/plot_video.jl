@@ -1,48 +1,33 @@
 using Plots
-using Statistics
+
+# 设置无头模式（静默运行无弹窗）并使用 GR 后端
+ENV["GKSwstype"] = "100"
+gr()
 
 """
     plot_wavefield_video(snaps::Vector{Matrix{Float32}}, snapshot_interval::Int, save_path::String="wavefield.mp4"; fps=10)
 
-Create a video from wavefield snapshots.
-- `snaps`: Vector of matrices containing wavefield snapshots.
-- `snapshot_interval`: Time interval between snapshots.
-- `save_path`: Path to save the video file (default: "wavefield.mp4").
-- `fps`: Frames per second for the output video (default: 10).
+Create a video from wavefield snapshots without popping up windows.
 """
 function plot_wavefield_video(snaps::Vector{Matrix{Float32}}, snapshot_interval::Int, save_path::String="wavefield.mp4"; fps=10)
-    if isempty(snaps)
-        println("No snapshots available for video creation.")
-        return
-    end
+    isempty(snaps) && (println("No snapshots available for video creation."); return)
 
-    anim = Animation()
+    # 计算全局最大值以固定颜色条，避免视频闪烁
+    global_max = maximum(maximum.(abs, snaps))
+    scale = global_max < 1e-10 ? 1e-10 : global_max * 0.5
+    clims = (-scale, scale)
 
-    for (i, snap) in enumerate(snaps)
-        # Calculate the corresponding actual time step
-        actual_time_step = i * snapshot_interval
-
-        # Use similar logic as create_video_callback
-        max_val = maximum(abs.(snap))
-
-        if max_val < 1e-10
-            clims = (-1e-10, 1e-10)
-        else
-            scale = max_val * 0.5
-            clims = (-scale, scale)
-        end
-
-        p1 = heatmap(snap',
-            title="VZ Wavefield (Step $(actual_time_step))",
+    # 循环渲染每一帧
+    anim = @animate for (i, snap) in enumerate(snaps)
+        heatmap(snap',
+            title="VZ Wavefield (Step $(i * snapshot_interval))",
             xlabel="X (grid)", ylabel="Z (grid)",
             color=:seismic, clims=clims,
-            aspect_ratio=:equal, legend=true,
-            yflip=true
+            aspect_ratio=:equal, legend=true, yflip=true
         )
-
-        frame(anim)
     end
 
+    # 导出视频
     mp4(anim, save_path, fps=fps)
     println("Wavefield video saved as $(save_path)")
 end

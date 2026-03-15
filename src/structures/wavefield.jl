@@ -31,7 +31,9 @@ end
 
 Create zero-initialized wavefield on GPU.
 """
-function Wavefield(nx::Int, nz::Int)
+function Wavefield(nx::Int, nz::Int, pad::Int)
+    nx += 2 * pad
+    nz += 2 * pad
     return Wavefield(
         CUDA.zeros(Float32, nx, nz), CUDA.zeros(Float32, nx, nz),
         CUDA.zeros(Float32, nx, nz), CUDA.zeros(Float32, nx, nz), CUDA.zeros(Float32, nx, nz),

@@ -1,3 +1,4 @@
+# src/initiate/init_habc.jl
 """
     HABCConfig{T}
 
@@ -17,8 +18,11 @@ struct HABCConfig{T<:AbstractMatrix{Float32}}
 end
 
 
-function init_habc(nx::Int, nz::Int, nbc::Int, pad::Int, dt::Real, dh::Real,
+function init_habc(nx::Int, nz::Int, pad::Int, dt::Real, dh::Real,
     v_ref::Real)
+
+    nx_pad = nx + 2 * pad
+    nz_pad = nz + 2 * pad
 
     r = Float32(v_ref * dt / dh)
     b_p = 0.45f0
@@ -32,9 +36,9 @@ function init_habc(nx::Int, nz::Int, nbc::Int, pad::Int, dt::Real, dh::Real,
 
     dist(i, j) = min(i - 1, nx - i, j - 1, nz - j)
 
-    w_vx = [Float32(clamp((dist(i, j) - 0.0) / (pad - 1), 0.0, 1.0)) for j in 1:nz, i in 1:nx]
-    w_vz = [Float32(clamp((dist(i, j) - 0.5) / (pad - 1), 0.0, 1.0)) for j in 1:nz, i in 1:nx]
-    w_tau = [Float32(clamp((dist(i, j) - 0.75) / (pad - 1), 0.0, 1.0)) for j in 1:nz, i in 1:nx]
+    w_vx = [Float32(clamp((dist(i, j) - 0.0) / (pad - 1), 0.0, 1.0)) for j in 1:nz_pad, i in 1:nx_pad]
+    w_vz = [Float32(clamp((dist(i, j) - 0.5) / (pad - 1), 0.0, 1.0)) for j in 1:nz_pad, i in 1:nx_pad]
+    w_tau = [Float32(clamp((dist(i, j) - 0.75) / (pad - 1), 0.0, 1.0)) for j in 1:nz_pad, i in 1:nx_pad]
 
     return HABCConfig(
         pad - 1,
@@ -43,10 +47,4 @@ function init_habc(nx::Int, nz::Int, nbc::Int, pad::Int, dt::Real, dh::Real,
         to_device(w_vz),
         to_device(w_tau)
     )
-end
-
-function init_habc(nx::Int, nz::Int, nbc::Int, dt::Real, dh::Real,
-    v_ref::Real)
-    pad = nbc + 4
-    return init_habc(nx, nz, nbc, pad, dt, dh, v_ref)
 end

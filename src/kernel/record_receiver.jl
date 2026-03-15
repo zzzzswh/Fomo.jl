@@ -1,6 +1,4 @@
-# ==============================================================================
-# Receiver Recording (CUDA Optimized)
-# ==============================================================================
+# src/kernel/record_receiver.jl
 
 function _record_kernel!(data, field, rec_i, rec_j, k::Int32, n_rec::Int32)
     idx = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
