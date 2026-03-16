@@ -233,3 +233,29 @@ function apply_habc_stress!(W, H, M)
     apply_habc_single_field!(W.txz, W.txz_old, H.w_tau, qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
     return nothing
 end
+
+# ---------- 通用单场备份 kernel ----------
+
+function _backup_single_field_cuda!(f_old, f, nbc, nx, nz)
+    i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    j = (blockIdx().y - 1) * blockDim().y + threadIdx().y
+    if i <= nx && j <= nz
+        if i <= nbc + 2 || i >= nx - nbc - 1 || j <= nbc + 2 || j >= nz - nbc - 1
+            @inbounds f_old[i, j] = f[i, j]
+        end
+    end
+    return nothing
+end
+
+"""
+    backup_single_field!(dst, src, nbc, nx, nz)
+
+通用边界单场备份。任何方程都能用。
+"""
+function backup_single_field!(dst, src, nbc::Int32, nx::Int32, nz::Int32)
+    threads = (32, 8)
+    blocks = (cld(nx, 32), cld(nz, 8))
+    @cuda threads = threads blocks = blocks _backup_single_field_cuda!(
+        dst, src, nbc, nx, nz)
+    return nothing
+end
