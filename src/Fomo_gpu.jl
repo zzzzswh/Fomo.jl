@@ -1,59 +1,42 @@
+# src/Fomo_gpu.jl
 module Fomo_gpu
 
-using ParallelStencil
-using ParallelStencil.FiniteDifferences2D
 using CUDA
 using StaticArrays
-using ProgressMeter
 
-@init_parallel_stencil(CUDA, Float32, 2)
-
-# structures
-include("structures/medium.jl")
-include("structures/wavefield.jl")
-include("structures/receiver.jl")
-include("structures/source.jl")
-
-# utils
+# 1. 工具（无依赖，最先加载）
 include("utils/to_device.jl")
 include("utils/ricker_wavelet.jl")
 include("utils/FD_utils.jl")
 include("utils/trace_norm.jl")
 
-# vacuum
-#include("vacuum/vacuum.jl")
+# 2. 采集系统（通用）
+include("acquisition/source.jl")
+include("acquisition/receiver.jl")
+include("acquisition/inject_source.jl")
+include("acquisition/record_receiver.jl")
 
-# init
-include("initiate/init_medium.jl")
-include("initiate/init_source.jl")
-include("initiate/init_receiver.jl")
-include("initiate/init_HABC.jl")
+# 3. 边界条件
+include("boundary/habc/habc.jl")
+include("boundary/habc/kernels.jl")
 
-# kernel
-include("kernel/elastic2d/update_stress.jl")
-include("kernel/elastic2d/update_velocity.jl")
-include("kernel/HABC/update_HABC.jl")
-include("kernel/inject_source.jl")
-include("kernel/record_receiver.jl")
+# 4. 弹性波方程
+include("equations/elastic2d/medium.jl")
+include("equations/elastic2d/wavefield.jl")
+#include("equations/elastic2d/vacuum.jl")
+include("equations/elastic2d/update_velocity.jl")
+include("equations/elastic2d/update_stress.jl")
+include("equations/elastic2d/elastic2d.jl")    # 入口函数，最后加载
 
-# simulator
-include("simulator/elastic2d.jl")
-
-# visualization
-include("visualization/plot_video.jl")
+# 5. 可视化
 include("visualization/plot_shot.jl")
+include("visualization/plot_video.jl")
 
-# 导出重要的函数
-export update_stress!, update_velocity!
-export run_simulation!
-export inject_source!, record_receivers!
-export init_source, init_receiver
-export _run_core!
-export init_medium, init_habc
-export ricker_wavelet
-export SimParams, Medium, Wavefield, ReceiverConfig, create_source_config
-export get_fd_coefficients
-export plot_shot, plot_wavefield_video
-export trace_norm
+# ── Exports ──
+# 用户只需要这几个
+export elastic2d                     # 弹性波一站式 API
+export ricker_wavelet                # 可能需要单独用
+export trace_norm                    # 后处理
+export plot_shot, plot_wavefield_video  # 可视化
 
 end  # module
