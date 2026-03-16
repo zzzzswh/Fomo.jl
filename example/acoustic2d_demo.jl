@@ -4,8 +4,8 @@ using CUDA
 using Plots
 using Printf
 
-include("../src/Fomo_gpu.jl")
-using .Fomo_gpu
+include("../src/Fomo.jl")
+using .Fomo
 
 # ── 参数 ──
 nx, nz = 400, 300

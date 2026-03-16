@@ -1,4 +1,4 @@
-# src/utils/fd_utils.jl (或者直接放在 Fomo_gpu.jl 中)
+# src/utils/fd_utils.jl (或者直接放在 Fomo.jl 中)
 using StaticArrays
 
 # 使用 Tuple 或 SVector 来存储，避免 Vector 的堆分配

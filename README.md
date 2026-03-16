@@ -1,4 +1,4 @@
-# Fomo_gpu.jl
+# Fomo.jl
 
 **GPU-accelerated seismic wave equation forward modeling in Julia**
 
@@ -6,7 +6,7 @@
   <img src="wavefield.gif" alt="Elastic wavefield simulation" width="600">
 </p>
 
-Fomo_gpu is a CUDA-based 2D seismic forward modeling package that solves acoustic and elastic wave equations on staggered grids using high-order finite differences.
+Fomo is a CUDA-based 2D seismic forward modeling package that solves acoustic and elastic wave equations on staggered grids using high-order finite differences.
 
 ## Features
 
@@ -21,7 +21,7 @@ Fomo_gpu is a CUDA-based 2D seismic forward modeling package that solves acousti
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/YOUR_USERNAME/Fomo_gpu.jl")
+Pkg.add(url="https://github.com/Wuheng10086/Fomo.jl")
 ```
 
 ## Quick Start
@@ -30,7 +30,7 @@ Pkg.add(url="https://github.com/YOUR_USERNAME/Fomo_gpu.jl")
 
 ```julia
 using CUDA
-using Fomo_gpu
+using Fomo
 
 # Grid parameters
 nx, nz = 400, 300
@@ -66,7 +66,7 @@ plot_wavefield_video(snaps, 50, "acoustic_wavefield.mp4",
 
 ```julia
 using CUDA
-using Fomo_gpu
+using Fomo
 
 nx, nz = 400, 300
 dh = 10.0f0
@@ -137,7 +137,7 @@ plot_wavefield_video(snaps, 50, "elastic_wavefield.mp4",
 
 ## Method
 
-Fomo_gpu implements the velocity-stress formulation on a staggered grid (Virieux, 1986). Key numerical aspects:
+Fomo implements the velocity-stress formulation on a staggered grid (Virieux, 1986). Key numerical aspects:
 
 - **Spatial discretization** — Standard staggered grid with up to 10th-order FD operators
 - **Temporal discretization** — Second-order leapfrog time stepping

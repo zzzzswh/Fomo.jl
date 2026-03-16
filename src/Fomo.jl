@@ -1,6 +1,6 @@
-# src/Fomo_gpu.jl
+# src/Fomo.jl
 
-module Fomo_gpu
+module Fomo
 
 using CUDA
 using StaticArrays

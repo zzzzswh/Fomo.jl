@@ -1,6 +1,6 @@
-name = "Fomo_gpu"
+name = "Fomo"
 uuid = "e9baeaa4-081b-4464-8a7a-2bbb8a87d84e"
-authors = ["wuheng <imwuheng@gmail.com>"]
+authors = ["Evan Heng Wu <imwuheng@gmail.com>"]
 version = "0.1.0"
 
 [deps]
