@@ -2,158 +2,153 @@
 using ParallelStencil
 using ParallelStencil.FiniteDifferences2D
 
-@parallel_indices (ix, iy) function copy_strip_kernel!(old, new, start_i, start_j)
-    # Translate indices to the specified rectangle starting point
-    i = ix + start_i - 1
-    j = iy + start_j - 1
-    old[i, j] = new[i, j]
+# ==============================================================================
+# 1. 大一统边界备份 Kernel (同时处理 5 个场)
+# ==============================================================================
+@parallel_indices (i, j) function backup_all_boundaries_kernel!(
+    vx_old, vx, vz_old, vz, txx_old, txx, tzz_old, tzz, txz_old, txz,
+    nbc, nx, nz
+)
+    if i <= nx && j <= nz
+        # 只备份边缘厚度为 nbc+2 的区域，跳过庞大的中心网格
+        if i <= nbc + 2 || i >= nx - nbc - 1 || j <= nbc + 2 || j >= nz - nbc - 1
+            vx_old[i, j] = vx[i, j]
+            vz_old[i, j] = vz[i, j]
+            txx_old[i, j] = txx[i, j]
+            tzz_old[i, j] = tzz[i, j]
+            txz_old[i, j] = txz[i, j]
+        end
+    end
     return nothing
 end
 
-"""
-    backup_boundary_field!(old, new, nbc, nx, nz)
+function backup_boundary!(W, H, M)
+    # 【核心修复：将结构体属性提取为强类型本地变量，彻底杀灭 CPU 动态分配】
+    nx::Int = M.nx
+    nz::Int = M.nz
+    nbc::Int = H.nbc
+    vx_o = W.vx_old
+    vx = W.vx
+    vz_o = W.vz_old
+    vz = W.vz
+    txx_o = W.txx_old
+    txx = W.txx
+    tzz_o = W.tzz_old
+    tzz = W.tzz
+    txz_o = W.txz_old
+    txz = W.txz
 
-Precisely backup boundary data of a single field variable. Only launch threads on the four rectangular strips where boundaries are located.
-"""
-function backup_boundary_field!(old, new, nbc, nx, nz)
-    # Left and right strips (full height nz)
-    @parallel (1:nbc+2, 1:nz) copy_strip_kernel!(old, new, 1, 1)                  # Left
-    @parallel (1:nbc+2, 1:nz) copy_strip_kernel!(old, new, nx - nbc - 1, 1)           # Right
-
-    # Top and bottom strips (trimmed width nx-2nbc-4)
-    w_x = nx - 2 * nbc - 4
-    @parallel (1:w_x, 1:nbc+2) copy_strip_kernel!(old, new, nbc + 3, 1)             # Top
-    @parallel (1:w_x, 1:nbc+2) copy_strip_kernel!(old, new, nbc + 3, nz - nbc - 1)      # Bottom
-    return nothing
-end
-
-function backup_boundary!(W, H::HABCConfig, M::Medium)
-    nx, nz = M.nx, M.nz
-    nbc = H.nbc
-
-    backup_boundary_field!(W.vx_old, W.vx, nbc, nx, nz)
-    backup_boundary_field!(W.vz_old, W.vz, nbc, nx, nz)
-    backup_boundary_field!(W.txx_old, W.txx, nbc, nx, nz)
-    backup_boundary_field!(W.tzz_old, W.tzz, nbc, nx, nz)
-    backup_boundary_field!(W.txz_old, W.txz, nbc, nx, nz)
+    @parallel (1:nx, 1:nz) backup_all_boundaries_kernel!(
+        vx_o, vx, vz_o, vz, txx_o, txx, tzz_o, tzz, txz_o, txz,
+        nbc, nx, nz
+    )
     return nothing
 end
 
 # ==============================================================================
-# 2. HABC 核函数 (Edges - 1D) 没有任何 if 判断！
+# 2. HABC 核函数 (左右、上下、四角整合版)
 # ==============================================================================
-
-@parallel_indices (ix, iy) function habc_left_edge_kernel!(f, f_old, w, qx, qt_x, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_x = -qx * f[i+1, j] - qt_x * f_old[i, j] - qxt * f_old[i+1, j]
-    wt = w[j, i] # Note: maintaining the original w[j, i] indexing order
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_x
+@parallel_indices (iy) function habc_lr_edges_kernel!(f, f_old, w, qx, qt_x, qxt, nx, nz, nbc)
+    j = iy
+    if j >= 1 && j <= nz
+        # Left (正向循环)
+        for i in 2:nbc+1
+            sum_x = -qx * f[i+1, j] - qt_x * f_old[i, j] - qxt * f_old[i+1, j]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_x
+        end
+        # Right (反向循环)
+        for i in nx-1:-1:nx-nbc
+            sum_x = -qx * f[i-1, j] - qt_x * f_old[i, j] - qxt * f_old[i-1, j]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_x
+        end
+    end
     return nothing
 end
 
-@parallel_indices (ix, iy) function habc_right_edge_kernel!(f, f_old, w, qx, qt_x, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_x = -qx * f[i-1, j] - qt_x * f_old[i, j] - qxt * f_old[i-1, j]
-    wt = w[j, i]
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_x
+@parallel_indices (ix) function habc_tb_edges_kernel!(f, f_old, w, qz, qt_z, qxt, nx, nz, nbc)
+    i = ix
+    if i >= 1 && i <= nx
+        # Top (正向循环)
+        for j in 2:nbc+1
+            sum_z = -qz * f[i, j+1] - qt_z * f_old[i, j] - qxt * f_old[i, j+1]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_z
+        end
+        # Bottom (反向循环)
+        for j in nz-1:-1:nz-nbc
+            sum_z = -qz * f[i, j-1] - qt_z * f_old[i, j] - qxt * f_old[i, j-1]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_z
+        end
+    end
     return nothing
 end
 
-@parallel_indices (ix, iy) function habc_bottom_edge_kernel!(f, f_old, w, qz, qt_z, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_z = -qz * f[i, j-1] - qt_z * f_old[i, j] - qxt * f_old[i, j-1]
-    wt = w[j, i]
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_z
-    return nothing
-end
-
-@parallel_indices (ix, iy) function habc_top_edge_kernel!(f, f_old, w, qz, qt_z, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_z = -qz * f[i, j+1] - qt_z * f_old[i, j] - qxt * f_old[i, j+1]
-    wt = w[j, i]
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * sum_z
+@parallel_indices (idx) function habc_corners_kernel!(f, f_old, w, qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
+    if idx == 1
+        # Left-Top
+        for i in 2:nbc+1, j in 2:nbc+1
+            sum_x = -qx * f[i+1, j] - qt_x * f_old[i, j] - qxt * f_old[i+1, j]
+            sum_z = -qz * f[i, j+1] - qt_z * f_old[i, j] - qxt * f_old[i, j+1]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
+        end
+        # Right-Top
+        for i in nx-1:-1:nx-nbc, j in 2:nbc+1
+            sum_x = -qx * f[i-1, j] - qt_x * f_old[i, j] - qxt * f_old[i-1, j]
+            sum_z = -qz * f[i, j+1] - qt_z * f_old[i, j] - qxt * f_old[i, j+1]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
+        end
+        # Left-Bottom
+        for i in 2:nbc+1, j in nz-1:-1:nz-nbc
+            sum_x = -qx * f[i+1, j] - qt_x * f_old[i, j] - qxt * f_old[i+1, j]
+            sum_z = -qz * f[i, j-1] - qt_z * f_old[i, j] - qxt * f_old[i, j-1]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
+        end
+        # Right-Bottom
+        for i in nx-1:-1:nx-nbc, j in nz-1:-1:nz-nbc
+            sum_x = -qx * f[i-1, j] - qt_x * f_old[i, j] - qxt * f_old[i-1, j]
+            sum_z = -qz * f[i, j-1] - qt_z * f_old[i, j] - qxt * f_old[i, j-1]
+            wt = w[i, j]
+            f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
+        end
+    end
     return nothing
 end
 
 # ==============================================================================
-# 3. HABC 核函数 (Corners - 2D) 用两边平均
+# 3. 顶层应用接口
 # ==============================================================================
+function apply_habc_single_field!(f, f_old, w, H, M)
+    # 【核心修复：同上，消灭结构体解包带来的 CPU 开销】
+    nx::Int = M.nx
+    nz::Int = M.nz
+    nbc::Int = H.nbc
+    qx::Float32 = H.qx
+    qz::Float32 = H.qz
+    qt_x::Float32 = H.qt_x
+    qt_z::Float32 = H.qt_z
+    qxt::Float32 = H.qxt
 
-@parallel_indices (ix, iy) function habc_lb_corner_kernel!(f, f_old, w, qx, qz, qt_x, qt_z, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_x = -qx * f[i+1, j] - qt_x * f_old[i, j] - qxt * f_old[i+1, j]
-    sum_z = -qz * f[i, j-1] - qt_z * f_old[i, j] - qxt * f_old[i, j-1]
-    wt = w[j, i]
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
+    @parallel (1:nz) habc_lr_edges_kernel!(f, f_old, w, qx, qt_x, qxt, nx, nz, nbc)
+    @parallel (1:nx) habc_tb_edges_kernel!(f, f_old, w, qz, qt_z, qxt, nx, nz, nbc)
+    @parallel (1:1) habc_corners_kernel!(f, f_old, w, qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
     return nothing
 end
 
-@parallel_indices (ix, iy) function habc_rb_corner_kernel!(f, f_old, w, qx, qz, qt_x, qt_z, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_x = -qx * f[i-1, j] - qt_x * f_old[i, j] - qxt * f_old[i-1, j]
-    sum_z = -qz * f[i, j-1] - qt_z * f_old[i, j] - qxt * f_old[i, j-1]
-    wt = w[j, i]
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
+function apply_habc_velocity!(W, H, M)
+    apply_habc_single_field!(W.vx, W.vx_old, H.w_vx, H, M)
+    apply_habc_single_field!(W.vz, W.vz_old, H.w_vz, H, M)
     return nothing
 end
 
-@parallel_indices (ix, iy) function habc_lt_corner_kernel!(f, f_old, w, qx, qz, qt_x, qt_z, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_x = -qx * f[i+1, j] - qt_x * f_old[i, j] - qxt * f_old[i+1, j]
-    sum_z = -qz * f[i, j+1] - qt_z * f_old[i, j] - qxt * f_old[i, j+1]
-    wt = w[j, i]
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
-    return nothing
-end
-
-@parallel_indices (ix, iy) function habc_rt_corner_kernel!(f, f_old, w, qx, qz, qt_x, qt_z, qxt, start_i, start_j)
-    i, j = ix + start_i - 1, iy + start_j - 1
-    sum_x = -qx * f[i-1, j] - qt_x * f_old[i, j] - qxt * f_old[i-1, j]
-    sum_z = -qz * f[i, j+1] - qt_z * f_old[i, j] - qxt * f_old[i, j+1]
-    wt = w[j, i]
-    f[i, j] = wt * f[i, j] + (1.0f0 - wt) * 0.5f0 * (sum_x + sum_z)
-    return nothing
-end
-
-"""
-    apply_habc_field!(f, f_old, H, weights, nx, nz)
-
-Apply boundary updates for a single field variable. Precisely calculate dimensions and starting coordinates for the 8 boundary rectangles, then rapidly invoke GPU kernels.
-"""
-function apply_habc_field!(f, f_old, H::HABCConfig, weights, nx::Int, nz::Int)
-    nbc = H.nbc
-    qx, qz, qt_x, qt_z, qxt = H.qx, H.qz, H.qt_x, H.qt_z, H.qxt
-
-    # --- 1. 计算各个维度的启动线程数量 (区域尺寸) ---
-    len_edge_y = nz - 2 * nbc - 2  # 左右边缘的高度
-    len_edge_x = nx - 2 * nbc - 2  # 上下边缘的宽度
-    len_corner = nbc               # 角落的边长
-
-    # --- 2. 处理 Edges (四条边) ---
-    @parallel (1:nbc, 1:len_edge_y) habc_left_edge_kernel!(f, f_old, weights, qx, qt_x, qxt, 2, nbc + 2)
-    @parallel (1:nbc, 1:len_edge_y) habc_right_edge_kernel!(f, f_old, weights, qx, qt_x, qxt, nx - nbc, nbc + 2)
-    @parallel (1:len_edge_x, 1:nbc) habc_bottom_edge_kernel!(f, f_old, weights, qz, qt_z, qxt, nbc + 2, nz - nbc)
-    @parallel (1:len_edge_x, 1:nbc) habc_top_edge_kernel!(f, f_old, weights, qz, qt_z, qxt, nbc + 2, 2)
-
-    # --- 3. 处理 Corners (四个角) ---
-    @parallel (1:nbc, 1:nbc) habc_lb_corner_kernel!(f, f_old, weights, qx, qz, qt_x, qt_z, qxt, 2, nz - nbc)
-    @parallel (1:nbc, 1:nbc) habc_rb_corner_kernel!(f, f_old, weights, qx, qz, qt_x, qt_z, qxt, nx - nbc, nz - nbc)
-    @parallel (1:nbc, 1:nbc) habc_lt_corner_kernel!(f, f_old, weights, qx, qz, qt_x, qt_z, qxt, 2, 2)
-    @parallel (1:nbc, 1:nbc) habc_rt_corner_kernel!(f, f_old, weights, qx, qz, qt_x, qt_z, qxt, nx - nbc, 2)
-
-    return nothing
-end
-
-# 顶层应用接口
-function apply_habc_velocity!(W, H::HABCConfig, M::Medium)
-    apply_habc_field!(W.vx, W.vx_old, H, H.w_vx, M.nx, M.nz)
-    apply_habc_field!(W.vz, W.vz_old, H, H.w_vz, M.nx, M.nz)
-    return nothing
-end
-
-function apply_habc_stress!(W, H::HABCConfig, M::Medium)
-    apply_habc_field!(W.txx, W.txx_old, H, H.w_tau, M.nx, M.nz)
-    apply_habc_field!(W.tzz, W.tzz_old, H, H.w_tau, M.nx, M.nz)
-    apply_habc_field!(W.txz, W.txz_old, H, H.w_tau, M.nx, M.nz)
+function apply_habc_stress!(W, H, M)
+    apply_habc_single_field!(W.txx, W.txx_old, H.w_tau, H, M)
+    apply_habc_single_field!(W.tzz, W.tzz_old, H.w_tau, H, M)
+    apply_habc_single_field!(W.txz, W.txz_old, H.w_tau, H, M)
     return nothing
 end

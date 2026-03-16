@@ -4,7 +4,7 @@
 
 Higdon Absorbing Boundary Condition parameters.
 """
-struct HABCConfig{T<:AbstractMatrix{Float32}}
+struct HABCConfig{T}
     nbc::Int
     qx::Float32
     qz::Float32
@@ -18,9 +18,7 @@ struct HABCConfig{T<:AbstractMatrix{Float32}}
 end
 
 
-function init_habc(nx::Int, nz::Int, pad::Int, dt::Real, dh::Real,
-    v_ref::Real)
-
+function init_habc(nx::Int, nz::Int, pad::Int, dt::Real, dh::Real, v_ref::Real)
     nx_pad = nx + 2 * pad
     nz_pad = nz + 2 * pad
 
@@ -34,11 +32,13 @@ function init_habc(nx::Int, nz::Int, pad::Int, dt::Real, dh::Real,
     qt_z = Float32((b_p * (beta + r) - beta) / ((beta + r) * (1 - b_p)))
     qxt = Float32(b_p / (b_p - 1.0f0))
 
-    dist(i, j) = min(i - 1, nx - i, j - 1, nz - j)
+    # 💡 核心修复：距离必须相对于 padded 后的总网格尺寸计算！
+    dist(i, j) = min(i - 1, nx_pad - i, j - 1, nz_pad - j)
 
-    w_vx = [Float32(clamp((dist(i, j) - 0.0) / (pad - 1), 0.0, 1.0)) for j in 1:nz_pad, i in 1:nx_pad]
-    w_vz = [Float32(clamp((dist(i, j) - 0.5) / (pad - 1), 0.0, 1.0)) for j in 1:nz_pad, i in 1:nx_pad]
-    w_tau = [Float32(clamp((dist(i, j) - 0.75) / (pad - 1), 0.0, 1.0)) for j in 1:nz_pad, i in 1:nx_pad]
+    # 生成权重矩阵 (注意你修改好的推导式顺序非常正确)
+    w_vx = [Float32(clamp((dist(i, j) - 0.0) / (pad - 1), 0.0, 1.0)) for i in 1:nx_pad, j in 1:nz_pad]
+    w_vz = [Float32(clamp((dist(i, j) - 0.5) / (pad - 1), 0.0, 1.0)) for i in 1:nx_pad, j in 1:nz_pad]
+    w_tau = [Float32(clamp((dist(i, j) - 0.75) / (pad - 1), 0.0, 1.0)) for i in 1:nx_pad, j in 1:nz_pad]
 
     return HABCConfig(
         pad - 1,

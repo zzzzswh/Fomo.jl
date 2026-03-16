@@ -75,3 +75,31 @@ function run_simulation!(W::Wavefield, M::Medium, S::SourceConfig, R::ReceiverCo
 
     return Array(seis_vx), Array(seis_vz), snaps
 end
+
+
+==================================================================================
+
+
+function backup_boundary_field!(old, new, nbc, nx, nz)
+    # Left and right strips (full height nz)
+    @parallel (1:nbc+2, 1:nz) copy_strip_kernel!(old, new, 1, 1)                  # Left
+    @parallel (1:nbc+2, 1:nz) copy_strip_kernel!(old, new, nx - nbc - 1, 1)           # Right
+
+    # Top and bottom strips (trimmed width nx-2nbc-4)
+    w_x = nx - 2 * nbc - 4
+    @parallel (1:w_x, 1:nbc+2) copy_strip_kernel!(old, new, nbc + 3, 1)             # Top
+    @parallel (1:w_x, 1:nbc+2) copy_strip_kernel!(old, new, nbc + 3, nz - nbc - 1)      # Bottom
+    return nothing
+end
+
+function backup_boundary!(W, H::HABCConfig, M::Medium)
+    nx, nz = M.nx, M.nz
+    nbc = H.nbc
+
+    backup_boundary_field!(W.vx_old, W.vx, nbc, nx, nz)
+    backup_boundary_field!(W.vz_old, W.vz, nbc, nx, nz)
+    backup_boundary_field!(W.txx_old, W.txx, nbc, nx, nz)
+    backup_boundary_field!(W.tzz_old, W.tzz, nbc, nx, nz)
+    backup_boundary_field!(W.txz_old, W.txz, nbc, nx, nz)
+    return nothing
+end

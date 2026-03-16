@@ -20,6 +20,9 @@ include("utils/ricker_wavelet.jl")
 include("utils/FD_utils.jl")
 include("utils/trace_norm.jl")
 
+# vacuum
+#include("vacuum/vacuum.jl")
+
 # init
 include("initiate/init_medium.jl")
 include("initiate/init_source.jl")
@@ -34,7 +37,7 @@ include("kernel/inject_source.jl")
 include("kernel/record_receiver.jl")
 
 # simulator
-include("simulator/el2d_simulator.jl")
+include("simulator/elastic2d.jl")
 
 # visualization
 include("visualization/plot_video.jl")
@@ -49,6 +52,7 @@ export _run_core!
 export init_medium, init_habc
 export ricker_wavelet
 export SimParams, Medium, Wavefield, ReceiverConfig, create_source_config
+export get_fd_coefficients
 export plot_shot, plot_wavefield_video
 export trace_norm
 

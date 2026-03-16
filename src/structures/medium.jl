@@ -6,7 +6,7 @@ Physical properties of the simulation domain.
 OPTIMIZATION: Includes precomputed buoyancy (1/rho) and lam_2mu (lambda + 2*mu)
               to eliminate expensive divisions in the simulation loop.
 """
-struct Medium{T<:AbstractMatrix{Float32}}
+struct Medium{T}
     nx::Int
     nz::Int
     dh::Float32

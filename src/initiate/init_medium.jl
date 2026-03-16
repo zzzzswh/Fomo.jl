@@ -1,4 +1,4 @@
-
+# src/initiate/init_medium.jl
 """
     init_medium(vp, vs, rho, dh, nbc, fd_order)
 
