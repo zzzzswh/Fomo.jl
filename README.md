@@ -1,19 +1,21 @@
 # Fomo.jl
 
-**GPU-accelerated seismic wave equation forward modeling in Julia**
+**GPU-accelerated 2D/3D acoustic & elastic wave equation simulator in Julia**
+
+> 🌐 [中文文档](README_CN.md) | **English**
 
 <p align="center">
   <img src="wavefield.gif" alt="Elastic wavefield simulation" width="600">
 </p>
 
-Fomo is a CUDA-based 2D seismic forward modeling package that solves acoustic and elastic wave equations on staggered grids using high-order finite differences.
+**Fomo** is a CUDA-based 2D & 3D wave equation simulator that solves acoustic and elastic wave equations on staggered grids using high-order finite differences. While originally developed for seismic modeling, it is equally applicable to any scenario involving acoustic or elastic wave propagation — seismic forward modeling, ultrasonics, non-destructive testing, medical imaging, underwater acoustics, and more.
 
 ## Features
 
-- **Acoustic & Elastic 2D** — Full support for both acoustic (pressure-velocity) and elastic (stress-velocity) formulations
+- **Acoustic & Elastic 2D/3D** — Full support for both acoustic (pressure-velocity) and elastic (stress-velocity) formulations
 - **Staggered Grid Finite Differences** — Up to 10th-order spatial accuracy for minimal numerical dispersion
-- **Hybrid Absorbing Boundary (HABC)** — Efficient boundary condition based on the method by Liu Yang, combining one-way wave equations with sponge damping
-- **Vacuum Free Surface** — Realistic free-surface modeling using the vacuum method (zero velocity/density at the surface)
+- **Hybrid Absorbing Boundary (HABC)** — Advanced absorbing boundary condition (Liu Yang) combining one-way wave equations with exponential damping. Achieves better absorption than traditional PML with significantly lower computational cost
+- **Vacuum Free Surface** — REmploys the vacuum method (setting velocity and density to zero) to model realistic free surfaces at arbitrary locations within the medium.  
 - **GPU Acceleration** — Built on [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) for high-performance computation on NVIDIA GPUs
 - **Built-in Visualization** — Shot record plotting and wavefield animation export out of the box
 
@@ -141,7 +143,7 @@ Fomo implements the velocity-stress formulation on a staggered grid (Virieux, 19
 
 - **Spatial discretization** — Standard staggered grid with up to 10th-order FD operators
 - **Temporal discretization** — Second-order leapfrog time stepping
-- **Boundary conditions** — Hybrid Absorbing Boundary Condition (HABC) combining a one-way wave equation with exponential damping layers (Liu Yang)
+- **Boundary conditions** — Hybrid Absorbing Boundary Condition (HABC) combining a one-way wave equation with exponential damping layers (Liu Yang). Compared to PML, HABC provides superior absorption quality with lower computational overhead and simpler implementation
 - **Free surface** — Vacuum method: setting velocity and density to zero above the free surface naturally enforces the zero-traction condition
 
 ## Requirements
