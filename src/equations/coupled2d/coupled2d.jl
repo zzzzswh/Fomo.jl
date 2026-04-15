@@ -36,6 +36,10 @@ using StaticArrays
 - `snap_interval`: 快照间隔，0=不保存 (default: 0)
 - `v_ref_p`: P 场 HABC 参考速度 (default: min(vp))
 - `v_ref_s`: S 场 HABC 参考速度 (default: min(vs))
+- `smooth_sigma`: 介质参数高斯平滑标准差（网格点数, default: 3.0）
+  平滑后的 α,β 用于计算 ∇α,∇β,∇²α,∇²β（耦合/散射项），
+  原始 α,β 用于传播项（α∇²P, β∇²S），保留传播精度。
+  设为 0.0 可关闭平滑（仅适用于本身已光滑的模型）。
 
 # 返回
 - `seis_P`: [n_rec × nt] P 势场地震记录
@@ -54,7 +58,8 @@ function coupled2d(
     fd_order::Int=8,
     snap_interval::Int=0,
     v_ref_p::Float32=minimum(vp[vp.>0.0f0]),
-    v_ref_s::Float32=minimum(vs[vs.>0.0f0])
+    v_ref_s::Float32=minimum(vs[vs.>0.0f0]),
+    smooth_sigma::Float64=3.0
 )
     nx, nz = size(vp)
 
@@ -63,7 +68,7 @@ function coupled2d(
     d2_c0, d2 = get_centered_d2(fd_order)
 
     # ── 介质初始化 ──
-    medium = init_coupled_medium(vp, vs, dh, nbc, fd_order)
+    medium = init_coupled_medium(vp, vs, dh, nbc, fd_order; smooth_sigma=smooth_sigma)
 
     # ── 波场初始化（8 个标量场：4 物理 + 4 HABC 备份）──
     W = CoupledWavefield(nx, nz, medium.pad)
