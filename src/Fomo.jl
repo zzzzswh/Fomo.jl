@@ -1,4 +1,7 @@
 # src/Fomo.jl
+#
+# 新增: coupled2d — 耦合 P-S 势场求解器
+# 基于 Li et al. (2018) "Elastic RTM using acoustic propagators"
 
 module Fomo
 
@@ -9,11 +12,12 @@ using StaticArrays
 include("utils/to_device.jl")
 include("utils/ricker_wavelet.jl")
 include("utils/FD_utils.jl")
+include("utils/FD_centered.jl")         # [新增] 正则网格中心差分系数
 include("utils/trace_norm.jl")
-include("utils/pad_array.jl")         # 2D pad + buoyancy
+include("utils/pad_array.jl")           # 2D pad + buoyancy
 
 # 1b. 工具（3D）
-include("utils/pad_array_3d.jl")      # 3D pad + buoyancy
+include("utils/pad_array_3d.jl")        # 3D pad + buoyancy
 
 # 2. 采集系统（2D）
 include("acquisition/source.jl")
@@ -30,6 +34,7 @@ include("acquisition/record_receiver_3d.jl")
 # 3. 边界条件（2D）
 include("boundary/habc/habc.jl")
 include("boundary/habc/kernels.jl")
+include("boundary/sponge.jl")           # [新增] Sponge 吸收边界
 
 # 3b. 边界条件（3D）
 include("boundary/habc/habc_3d.jl")
@@ -63,13 +68,20 @@ include("equations/acoustic3d/update_velocity.jl")
 include("equations/acoustic3d/update_pressure.jl")
 include("equations/acoustic3d/acoustic3d.jl")
 
-# 8. 可视化
+# 8. [新增] 耦合 P-S 势场方程（2D）
+include("equations/coupled2d/medium.jl")
+include("equations/coupled2d/wavefield.jl")
+include("equations/coupled2d/update_fields.jl")
+include("equations/coupled2d/coupled2d.jl")
+
+# 9. 可视化
 include("visualization/plot_shot.jl")
 include("visualization/plot_video.jl")
 
 # ── Exports ──
 export elastic2d                        # 2D弹性波
 export acoustic2d                       # 2D声波
+export coupled2d                        # [新增] 2D耦合P-S势场
 export elastic3d                        # 3D弹性波
 export acoustic3d                       # 3D声波
 export ricker_wavelet
@@ -77,4 +89,3 @@ export trace_norm
 export plot_shot, plot_wavefield_video
 
 end  # module
-
