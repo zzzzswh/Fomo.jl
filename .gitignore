@@ -1,3 +1,7 @@
 *.png
 *.mp4
 !vz.png
+CLAUDE.md
+.deepseek/
+AGENTS.md
+example/comparison

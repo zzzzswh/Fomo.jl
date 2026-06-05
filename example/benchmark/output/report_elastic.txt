@@ -1,0 +1,19 @@
+HABC vs Cerjan sponge — elastic2d, 401×401, nbc=50, fd_order=8
+==================================================================
+Model:    homogeneous vp=2500.0 m/s, vs=1500.0 m/s, rho=2000.0 kg/m³
+Source:   center explosive (τxx + τzz), Ricker 15.0 Hz
+Time:     nt=2500, dt=1.0 ms  (T=2.5 s)
+
+Wall-clock (full run, includes warmup):
+  HABC    : 11.581 s
+  Sponge  : 1.108   s
+  Δ       : +945.6 %
+
+Late-time interior energy (last 25 %, normalized to each run's peak):
+  HABC    : 1.470e-08
+  Sponge  : 2.069e-06
+  Ratio   : 140.8x   (>1 → sponge leaks more)
+
+Outputs in E:\dev\Fomo.jl\example\benchmark\output :
+  - snapshots_grid_elastic.png
+  - energy_curve_elastic.png

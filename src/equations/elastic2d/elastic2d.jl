@@ -21,7 +21,9 @@ using StaticArrays
 - `nbc`: 吸收边界层数 (default: 50)
 - `fd_order`: 有限差分阶数 (default: 8)
 - `snap_interval`: 快照间隔，0=不保存 (default: 0)
-- `v_ref`: HABC 参考速度 (default: 自动取 minimum(vp[vp.>0]))
+- `boundary`: 吸收边界类型 `:habc`（默认）或 `:sponge`（Cerjan）
+- `v_ref`: HABC 参考速度 (default: 自动取 minimum(vp[vp.>0])，sponge 时忽略)
+- `sponge_factor`: Cerjan sponge 衰减系数 (default: 0.015，HABC 时忽略)
 """
 function elastic2d(
     vp::Matrix{Float32}, vs::Matrix{Float32}, rho::Matrix{Float32},
@@ -33,8 +35,12 @@ function elastic2d(
     nbc::Int=50,
     fd_order::Int=8,
     snap_interval::Int=0,
-    v_ref::Float32=minimum(vp[vp.>0.0f0])
+    boundary::Symbol=:habc,
+    v_ref::Float32=minimum(vp[vp.>0.0f0]),
+    sponge_factor::Float32=0.015f0,
 )
+    boundary in (:habc, :sponge) ||
+        throw(ArgumentError("boundary must be :habc or :sponge, got $boundary"))
     nx, nz = size(vp)
 
     # ── 有限差分系数 ──
@@ -46,8 +52,12 @@ function elastic2d(
     # ── 波场初始化 ──
     W = Wavefield(nx, nz, medium.pad)
 
-    # ── HABC 边界条件 ──
-    habc = init_habc(nx, nz, medium.pad, dt, dh, v_ref)
+    # ── 吸收边界 ──
+    if boundary == :habc
+        bc = init_habc(nx, nz, medium.pad, dt, dh, v_ref)
+    else  # :sponge
+        bc = init_sponge(nx, nz, medium.pad, nbc; factor=sponge_factor)
+    end
 
     # ── 震源 ──
     wavelet_data = ricker_wavelet(f0, dt, nt)
@@ -74,12 +84,14 @@ function elastic2d(
     pad = medium.pad
     inner_nx = medium.nx - fd_order
     inner_nz = medium.nz - fd_order
+    nx_pad = Int32(medium.nx)
+    nz_pad = Int32(medium.nz)
 
     # ── Warmup: 1 步触发 JIT ──
     @info "Warming up kernels..."
-    _elastic2d_loop!(W, medium, source, receiver, habc,
+    _elastic2d_loop!(W, medium, source, receiver, bc,
         a_static, dt, 1, inner_nx, inner_nz, pad,
-        seis_vx, seis_vz, snaps, 0)
+        seis_vx, seis_vz, snaps, 0, boundary, nx_pad, nz_pad)
     CUDA.synchronize()
 
     # ── Reset ──
@@ -88,11 +100,11 @@ function elastic2d(
     fill!(seis_vz, 0.0f0)
 
     # ── Run ──
-    @info "Starting elastic2d simulation... (nx=$nx, nz=$nz, nt=$nt)"
+    @info "Starting elastic2d simulation... (nx=$nx, nz=$nz, nt=$nt, boundary=$boundary)"
     elapsed = CUDA.@elapsed begin
-        _elastic2d_loop!(W, medium, source, receiver, habc,
+        _elastic2d_loop!(W, medium, source, receiver, bc,
             a_static, dt, nt, inner_nx, inner_nz, pad,
-            seis_vx, seis_vz, snaps, snap_interval)
+            seis_vx, seis_vz, snaps, snap_interval, boundary, nx_pad, nz_pad)
     end
     @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
 
@@ -100,23 +112,37 @@ function elastic2d(
 end
 
 """
-内部时间步循环，不导出。
+内部时间步循环，不导出。boundary ∈ {:habc, :sponge}。
 """
-function _elastic2d_loop!(W, M, S, R, H,
+function _elastic2d_loop!(W, M, S, R, B,
     a_static, dt, nt, inner_nx, inner_nz, pad,
-    seis_vx, seis_vz, snaps, snap_interval)
+    seis_vx, seis_vz, snaps, snap_interval,
+    boundary::Symbol, nx_pad::Int32, nz_pad::Int32)
     snap_idx = 1
 
     for it in 1:nt
         # A. Velocity phase
-        backup_velocity!(W, H, M)
-        update_velocity!(W, M, a_static, dt, inner_nx, inner_nz)
-        apply_habc_velocity!(W, H, M)
+        if boundary === :habc
+            backup_velocity!(W, B, M)
+            update_velocity!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_habc_velocity!(W, B, M)
+        else  # :sponge
+            update_velocity!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_sponge!(W.vx, B, nx_pad, nz_pad)
+            apply_sponge!(W.vz, B, nx_pad, nz_pad)
+        end
 
         # B. Stress phase
-        backup_stress!(W, H, M)
-        update_stress!(W, M, a_static, dt, inner_nx, inner_nz)
-        apply_habc_stress!(W, H, M)
+        if boundary === :habc
+            backup_stress!(W, B, M)
+            update_stress!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_habc_stress!(W, B, M)
+        else  # :sponge
+            update_stress!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_sponge!(W.txx, B, nx_pad, nz_pad)
+            apply_sponge!(W.tzz, B, nx_pad, nz_pad)
+            apply_sponge!(W.txz, B, nx_pad, nz_pad)
+        end
 
         # C. Source injection (弹性波：注入 txx + tzz)
         inject_source!(W.txx, S, it, dt)

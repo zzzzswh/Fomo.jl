@@ -67,12 +67,12 @@ end
 
 对单个波场施加 sponge 衰减。
 """
-function apply_sponge!(field, sponge::SpongeConfig, nx::Int, nz::Int)
+function apply_sponge!(field, sponge::SpongeConfig, nx::Integer, nz::Integer)
     nx32, nz32 = Int32(nx), Int32(nz)
     threads = (32, 8)
     blocks = (cld(nx, 32), cld(nz, 8))
 
-    @cuda threads=threads blocks=blocks _apply_sponge_cuda!(
+    @cuda threads = threads blocks = blocks _apply_sponge_cuda!(
         field, sponge.damp, nx32, nz32)
     return nothing
 end

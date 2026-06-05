@@ -24,7 +24,9 @@ using StaticArrays
 - `nbc`: 吸收边界层数 (default: 50)
 - `fd_order`: 有限差分阶数 (default: 8)
 - `snap_interval`: 快照间隔，0=不保存 (default: 0)
-- `v_ref`: HABC 参考速度 (default: 自动取 minimum(vp[vp.>0]))
+- `boundary`: 吸收边界类型 `:habc`（默认）或 `:sponge`（Cerjan）
+- `v_ref`: HABC 参考速度 (default: 自动取 minimum(vp[vp.>0])，sponge 时忽略)
+- `sponge_factor`: Cerjan sponge 衰减系数 (default: 0.015，HABC 时忽略)
 """
 function acoustic2d(
     vp::Matrix{Float32}, rho::Matrix{Float32},
@@ -36,8 +38,12 @@ function acoustic2d(
     nbc::Int=50,
     fd_order::Int=8,
     snap_interval::Int=0,
-    v_ref::Float32=minimum(vp[vp.>0.0f0])
+    boundary::Symbol=:habc,
+    v_ref::Float32=minimum(vp[vp.>0.0f0]),
+    sponge_factor::Float32=0.015f0,
 )
+    boundary in (:habc, :sponge) ||
+        throw(ArgumentError("boundary must be :habc or :sponge, got $boundary"))
     nx, nz = size(vp)
 
     # ── 有限差分系数 ──
@@ -49,8 +55,12 @@ function acoustic2d(
     # ── 波场初始化 ──
     W = AcousticWavefield(nx, nz, medium.pad)
 
-    # ── HABC 边界条件 ──
-    habc = init_habc(nx, nz, medium.pad, dt, dh, v_ref)
+    # ── 吸收边界 ──
+    if boundary == :habc
+        bc = init_habc(nx, nz, medium.pad, dt, dh, v_ref)
+    else  # :sponge
+        bc = init_sponge(nx, nz, medium.pad, nbc; factor=sponge_factor)
+    end
 
     # ── 震源 ──
     wavelet_data = ricker_wavelet(f0, dt, nt)
@@ -78,22 +88,26 @@ function acoustic2d(
     inner_nx = medium.nx - fd_order
     inner_nz = medium.nz - fd_order
 
-    # HABC 标量参数提取（循环外一次性完成）
-    nbc_i = Int32(habc.nbc)
+    # HABC 标量参数提取（循环外一次性完成，sponge 时未使用）
+    nbc_i = Int32(nbc)
     nx_i = Int32(medium.nx)
     nz_i = Int32(medium.nz)
-    qx = Float32(habc.qx)
-    qz = Float32(habc.qz)
-    qt_x = Float32(habc.qt_x)
-    qt_z = Float32(habc.qt_z)
-    qxt = Float32(habc.qxt)
+    if boundary == :habc
+        qx = Float32(bc.qx)
+        qz = Float32(bc.qz)
+        qt_x = Float32(bc.qt_x)
+        qt_z = Float32(bc.qt_z)
+        qxt = Float32(bc.qxt)
+    else
+        qx = qz = qt_x = qt_z = qxt = 0.0f0
+    end
 
     # ── Warmup ──
     @info "Warming up kernels..."
-    _acoustic2d_loop!(W, medium, source, receiver, habc,
+    _acoustic2d_loop!(W, medium, source, receiver, bc,
         a_static, dt, 1, inner_nx, inner_nz, pad,
         nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
-        seis_vx, seis_vz, snaps, 0)
+        seis_vx, seis_vz, snaps, 0, boundary)
     CUDA.synchronize()
 
     # ── Reset ──
@@ -102,12 +116,12 @@ function acoustic2d(
     fill!(seis_vz, 0.0f0)
 
     # ── Run ──
-    @info "Starting acoustic2d simulation... (nx=$nx, nz=$nz, nt=$nt)"
+    @info "Starting acoustic2d simulation... (nx=$nx, nz=$nz, nt=$nt, boundary=$boundary)"
     elapsed = CUDA.@elapsed begin
-        _acoustic2d_loop!(W, medium, source, receiver, habc,
+        _acoustic2d_loop!(W, medium, source, receiver, bc,
             a_static, dt, nt, inner_nx, inner_nz, pad,
             nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
-            seis_vx, seis_vz, snaps, snap_interval)
+            seis_vx, seis_vz, snaps, snap_interval, boundary)
     end
     @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
 
@@ -115,35 +129,40 @@ function acoustic2d(
 end
 
 """
-声波内部时间步循环。
+声波内部时间步循环。boundary 取 :habc 或 :sponge，决定每步更新后用哪种吸收。
 """
-function _acoustic2d_loop!(W, M, S, R, H,
+function _acoustic2d_loop!(W, M, S, R, B,
     a_static, dt, nt, inner_nx, inner_nz, pad,
     nbc, nx, nz, qx, qz, qt_x, qt_z, qxt,
-    seis_vx, seis_vz, snaps, snap_interval)
+    seis_vx, seis_vz, snaps, snap_interval, boundary::Symbol)
     snap_idx = 1
 
     for it in 1:nt
         # ── A. Velocity phase ──
-        # backup vx, vz
-        backup_single_field!(W.vx_old, W.vx, nbc, nx, nz)
-        backup_single_field!(W.vz_old, W.vz, nbc, nx, nz)
-        # update
-        update_velocity_acoustic!(W, M, a_static, dt, inner_nx, inner_nz)
-        # HABC
-        apply_habc_single_field!(W.vx, W.vx_old, H.w_vx,
-            qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
-        apply_habc_single_field!(W.vz, W.vz_old, H.w_vz,
-            qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
+        if boundary === :habc
+            backup_single_field!(W.vx_old, W.vx, nbc, nx, nz)
+            backup_single_field!(W.vz_old, W.vz, nbc, nx, nz)
+            update_velocity_acoustic!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_habc_single_field!(W.vx, W.vx_old, B.w_vx,
+                qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
+            apply_habc_single_field!(W.vz, W.vz_old, B.w_vz,
+                qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
+        else  # :sponge
+            update_velocity_acoustic!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_sponge!(W.vx, B, nx, nz)
+            apply_sponge!(W.vz, B, nx, nz)
+        end
 
         # ── B. Pressure phase ──
-        # backup p
-        backup_single_field!(W.p_old, W.p, nbc, nx, nz)
-        # update
-        update_pressure_acoustic!(W, M, a_static, dt, inner_nx, inner_nz)
-        # HABC
-        apply_habc_single_field!(W.p, W.p_old, H.w_tau,
-            qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
+        if boundary === :habc
+            backup_single_field!(W.p_old, W.p, nbc, nx, nz)
+            update_pressure_acoustic!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_habc_single_field!(W.p, W.p_old, B.w_tau,
+                qx, qz, qt_x, qt_z, qxt, nx, nz, nbc)
+        else  # :sponge
+            update_pressure_acoustic!(W, M, a_static, dt, inner_nx, inner_nz)
+            apply_sponge!(W.p, B, nx, nz)
+        end
 
         # ── C. Source injection（注入压力场）──
         inject_source!(W.p, S, it, dt)

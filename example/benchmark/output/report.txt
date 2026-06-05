@@ -1,0 +1,19 @@
+HABC vs Cerjan sponge — acoustic2d, 401×401, nbc=50, fd_order=8
+==================================================================
+Model:    homogeneous vp=2500.0 m/s, rho=2000.0 kg/m³
+Source:   center, Ricker 15.0 Hz
+Time:     nt=1500, dt=1.0 ms  (T=1.5000001 s)
+
+Wall-clock (full call, includes warmup):
+  HABC    : 9.285 s
+  Sponge  : 0.504   s
+  Δ       : +1742.3 %
+
+Late-time interior energy (last 25 %, normalized to each run's peak):
+  HABC    : 3.540e-07
+  Sponge  : 9.363e-06
+  Ratio   : 26.4x   (>1 → sponge leaks more)
+
+Outputs in E:\dev\Fomo.jl\example\benchmark\output :
+  - snapshots_grid.png
+  - energy_curve.png
