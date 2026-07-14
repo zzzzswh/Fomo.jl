@@ -13,6 +13,7 @@ include("utils/to_device.jl")
 include("utils/ricker_wavelet.jl")
 include("utils/FD_utils.jl")
 include("utils/FD_centered.jl")         # [新增] 正则网格中心差分系数
+include("utils/checks.jl")              # [新增] 入口参数校验（几何/CFL/频散）
 include("utils/trace_norm.jl")
 include("utils/pad_array.jl")           # 2D pad + buoyancy
 
@@ -74,9 +75,21 @@ include("equations/coupled2d/wavefield.jl")
 include("equations/coupled2d/update_fields.jl")
 include("equations/coupled2d/coupled2d.jl")
 
-# 9. 可视化
-include("visualization/plot_shot.jl")
-include("visualization/plot_video.jl")
+# 9. 可视化（package extension：需 `using Plots` 才加载，见 ext/FomoPlotsExt.jl）
+#    这样 `using Fomo` 不再拖入 Plots/GR，显著缩短加载时间
+"""
+    plot_shot(shot, save_path)
+
+绘制炮记录热力图并保存。需先 `using Plots` 以加载 FomoPlotsExt 扩展。
+"""
+function plot_shot end
+
+"""
+    plot_wavefield_video(snaps, snapshot_interval, save_path; fps=10, adaptive_clims=false)
+
+将波场快照导出为视频。需先 `using Plots` 以加载 FomoPlotsExt 扩展。
+"""
+function plot_wavefield_video end
 
 # ── Exports ──
 export elastic2d                        # 2D弹性波

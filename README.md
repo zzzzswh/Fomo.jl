@@ -91,13 +91,15 @@ sx = [nx ÷ 2];       sz = [10]
 rx = collect(1:2:nx); rz = fill(10, length(rx))
 
 # Forward modeling
-vx, vz, snaps = acoustic2d(vp, rho, dh, dt, nt, f0;
+res = acoustic2d(vp, rho, dh, dt, nt, f0;
     sx, sz, rx, rz,
     nbc=100, fd_order=8, snap_interval=50)
+# res.seis_p / res.seis_vx / res.seis_vz / res.snaps / res.stats.kernel_time_s
 
-# Visualization
-plot_shot(trace_norm(vz, dims=2), "acoustic_vz.png")
-plot_wavefield_video(snaps, 50, "acoustic_wavefield.mp4",
+# Visualization (requires `using Plots` to load the plotting extension)
+using Plots
+plot_shot(trace_norm(res.seis_vz, dims=2), "acoustic_vz.png")
+plot_wavefield_video(res.snaps, 50, "acoustic_wavefield.mp4",
     fps=10, adaptive_clims=true)
 ```
 
@@ -131,13 +133,15 @@ sx = [nx ÷ 2];       sz = [10]
 rx = collect(1:2:nx); rz = fill(10, length(rx))
 
 # Forward modeling
-vx, vz, snaps = elastic2d(vp, vs, rho, dh, dt, nt, f0;
+res = elastic2d(vp, vs, rho, dh, dt, nt, f0;
     sx, sz, rx, rz,
     nbc=100, fd_order=8, snap_interval=50)
+# res.seis_vx / res.seis_vz / res.snaps / res.stats.kernel_time_s
 
-# Visualization
-plot_shot(trace_norm(vz, dims=2), "elastic_vz.png")
-plot_wavefield_video(snaps, 50, "elastic_wavefield.mp4",
+# Visualization (requires `using Plots` to load the plotting extension)
+using Plots
+plot_shot(trace_norm(res.seis_vz, dims=2), "elastic_vz.png")
+plot_wavefield_video(res.snaps, 50, "elastic_wavefield.mp4",
     fps=10, adaptive_clims=true)
 ```
 
@@ -167,12 +171,12 @@ sx = [nx ÷ 2];       sz = [10]
 rx = collect(1:2:nx); rz = fill(10, length(rx))
 
 # Forward modeling — returns separated P and S potentials
-seis_P, seis_S, snaps_P, snaps_S = coupled2d(vp, vs, dh, dt, nt, f0;
+res = coupled2d(vp, vs, dh, dt, nt, f0;
     sx, sz, rx, rz,
     nbc=100, fd_order=8, snap_interval=50)
 
-# seis_P: P-wave potential (contains PP reflections)
-# seis_S: S-wave potential (contains PS conversions — only at Vs discontinuities!)
+# res.seis_P: P-wave potential (contains PP reflections)
+# res.seis_S: S-wave potential (contains PS conversions — only at Vs discontinuities!)
 ```
 
 </details>
@@ -202,6 +206,8 @@ seis_P, seis_S, snaps_P, snaps_S = coupled2d(vp, vs, dh, dt, nt, f0;
 | `nbc` | `50` | Number of absorbing boundary grid points |
 | `fd_order` | `8` | Finite difference order (2, 4, 6, 8, or 10) |
 | `snap_interval` | `0` | Snapshot interval (0 = no snapshots) |
+| `wavelet` | `nothing` | Custom source wavelet (length-`nt` vector; `nothing` → Ricker(f0)) |
+| `verbose` | `true` | Print progress logs |
 
 **`coupled2d` additional keyword arguments:**
 
@@ -210,9 +216,14 @@ seis_P, seis_S, snaps_P, snaps_S = coupled2d(vp, vs, dh, dt, nt, f0;
 | `v_ref_p` | `min(vp)` | HABC reference velocity for P-field |
 | `v_ref_s` | `min(vs)` | HABC reference velocity for S-field |
 
-**Returns:**
-- `acoustic2d` / `elastic2d` → `(vx_record, vz_record, snapshots)`
-- `coupled2d` → `(P_record, S_record, P_snapshots, S_snapshots)`
+**Returns (NamedTuple):**
+- `acoustic2d` → `(; seis_p, seis_vx, seis_vz, snaps, stats)`
+- `elastic2d` → `(; seis_vx, seis_vz, snaps, stats)`
+- `coupled2d` → `(; seis_P, seis_S, snaps_P, snaps_S, stats)`
+- `stats.kernel_time_s`: GPU main-loop time (after in-call warmup)
+
+**Staggered field positions** (mind the half-cell offsets when comparing with other codes):
+`p`/`τxx`/`τzz` at `(i, j)`, `vx` at `(i−1/2, j)`, `vz` at `(i, j+1/2)`, `τxz` at `(i−1/2, j+1/2)`.
 
 ### Utilities
 

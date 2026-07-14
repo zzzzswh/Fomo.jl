@@ -1,5 +1,5 @@
 #  ═══════════════════════════════════════════════════════════════════════════════
-# [NEW] src/equations/acoustic2d/acoustic2d.jl
+# src/equations/acoustic2d/acoustic2d.jl
 # 声波方程唯一入口
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -7,7 +7,7 @@ using CUDA
 using StaticArrays
 
 """
-    acoustic2d(vp, rho, dh, dt, nt, f0; kwargs...) -> (seis_vx, seis_vz, snaps)
+    acoustic2d(vp, rho, dh, dt, nt, f0; kwargs...) -> NamedTuple
 
 2D 声波模拟，一步到位。
 
@@ -16,17 +16,29 @@ using StaticArrays
 - `dh`: 网格间距 (m)
 - `dt`: 时间步长 (s)
 - `nt`: 时间步数
-- `f0`: 震源主频 (Hz)
+- `f0`: 震源主频 (Hz)（用于默认 Ricker 子波与频散检查）
 
 # 关键字参数
-- `sx, sz`: 震源坐标向量
-- `rx, rz`: 接收器坐标向量
-- `nbc`: 吸收边界层数 (default: 50)
+- `sx, sz`: 震源坐标向量（网格索引）
+- `rx, rz`: 接收器坐标向量（网格索引）
+- `nbc`: 吸收边界层数 (default: 50)，有效吸收区为 nbc + fd_order÷2
 - `fd_order`: 有限差分阶数 (default: 8)
 - `snap_interval`: 快照间隔，0=不保存 (default: 0)
 - `boundary`: 吸收边界类型 `:habc`（默认）或 `:sponge`（Cerjan）
 - `v_ref`: HABC 参考速度 (default: 自动取 minimum(vp[vp.>0])，sponge 时忽略)
 - `sponge_factor`: Cerjan sponge 衰减系数 (default: 0.015，HABC 时忽略)
+- `wavelet`: 自定义震源子波（长度 nt 的向量；default: nothing → Ricker(f0)）
+- `verbose`: 是否打印进度日志 (default: true)
+
+# 返回（NamedTuple）
+- `seis_p`:  [n_rec × nt] 压力记录
+- `seis_vx`: [n_rec × nt] 水平速度记录
+- `seis_vz`: [n_rec × nt] 垂直速度记录
+- `snaps`:   压力场快照序列
+- `stats`:   `(kernel_time_s=...,)` GPU 主循环耗时（warmup 后）
+
+# 场的交错位置（对比外部软件时注意半格偏移）
+- p:  (i, j)；vx: (i−1/2, j)；vz: (i, j+1/2)
 """
 function acoustic2d(
     vp::Matrix{Float32}, rho::Matrix{Float32},
@@ -39,12 +51,19 @@ function acoustic2d(
     fd_order::Int=8,
     snap_interval::Int=0,
     boundary::Symbol=:habc,
-    v_ref::Float32=minimum(vp[vp.>0.0f0]),
+    v_ref::Float32=Float32(minimum(x for x in vp if x > 0.0f0)),
     sponge_factor::Float32=0.015f0,
+    wavelet::Union{Nothing,AbstractVector{<:Real}}=nothing,
+    verbose::Bool=true,
 )
     boundary in (:habc, :sponge) ||
         throw(ArgumentError("boundary must be :habc or :sponge, got $boundary"))
     nx, nz = size(vp)
+
+    # ── 参数校验 ──
+    _check_geometry(nx, nz, sx, sz, rx, rz)
+    _check_numerics(maximum(vp), minimum(x for x in vp if x > 0.0f0),
+        dh, dt, f0, fd_order)
 
     # ── 有限差分系数 ──
     a_static = get_fd_coefficients(fd_order)
@@ -62,9 +81,11 @@ function acoustic2d(
         bc = init_sponge(nx, nz, medium.pad, nbc; factor=sponge_factor)
     end
 
-    # ── 震源 ──
-    wavelet_data = ricker_wavelet(f0, dt, nt)
-    wavelet_matrix = reshape(wavelet_data, 1, nt)
+    # ── 震源：默认 Ricker，可传自定义子波；多源按行展开 ──
+    wavelet_data = isnothing(wavelet) ? ricker_wavelet(f0, dt, nt) : Float32.(wavelet)
+    length(wavelet_data) == nt ||
+        throw(ArgumentError("wavelet 长度 $(length(wavelet_data)) ≠ nt=$nt"))
+    wavelet_matrix = repeat(reshape(wavelet_data, 1, nt), length(sx), 1)
     source = init_source(medium.pad, Int32.(sx), Int32.(sz), wavelet_matrix)
 
     # ── 接收器 ──
@@ -72,6 +93,7 @@ function acoustic2d(
 
     # ── 分配地震记录 ──
     num_receivers = length(receiver.rx)
+    seis_p = CUDA.zeros(Float32, num_receivers, nt)
     seis_vx = CUDA.zeros(Float32, num_receivers, nt)
     seis_vz = CUDA.zeros(Float32, num_receivers, nt)
 
@@ -89,43 +111,51 @@ function acoustic2d(
     inner_nz = medium.nz - fd_order
 
     # HABC 标量参数提取（循环外一次性完成，sponge 时未使用）
-    nbc_i = Int32(nbc)
     nx_i = Int32(medium.nx)
     nz_i = Int32(medium.nz)
     if boundary == :habc
+        # 与弹性路径统一：作用区宽度取 bc.nbc (= pad-1 = nbc+M-1)，
+        # 使一阶 Higdon 作用区与权重 ramp（跨度 pad-1）完全对齐
+        nbc_i = Int32(bc.nbc)
         qx = Float32(bc.qx)
         qz = Float32(bc.qz)
         qt_x = Float32(bc.qt_x)
         qt_z = Float32(bc.qt_z)
         qxt = Float32(bc.qxt)
     else
+        nbc_i = Int32(nbc)
         qx = qz = qt_x = qt_z = qxt = 0.0f0
     end
 
     # ── Warmup ──
-    @info "Warming up kernels..."
+    verbose && @info "Warming up kernels..."
     _acoustic2d_loop!(W, medium, source, receiver, bc,
         a_static, dt, 1, inner_nx, inner_nz, pad,
         nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
-        seis_vx, seis_vz, snaps, 0, boundary)
+        seis_p, seis_vx, seis_vz, snaps, 0, boundary)
     CUDA.synchronize()
 
     # ── Reset ──
     reset!(W)
+    fill!(seis_p, 0.0f0)
     fill!(seis_vx, 0.0f0)
     fill!(seis_vz, 0.0f0)
 
     # ── Run ──
-    @info "Starting acoustic2d simulation... (nx=$nx, nz=$nz, nt=$nt, boundary=$boundary)"
+    verbose && @info "Starting acoustic2d simulation... (nx=$nx, nz=$nz, nt=$nt, boundary=$boundary)"
     elapsed = CUDA.@elapsed begin
         _acoustic2d_loop!(W, medium, source, receiver, bc,
             a_static, dt, nt, inner_nx, inner_nz, pad,
             nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
-            seis_vx, seis_vz, snaps, snap_interval, boundary)
+            seis_p, seis_vx, seis_vz, snaps, snap_interval, boundary)
     end
-    @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
+    verbose && @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
 
-    return Array(seis_vx), Array(seis_vz), snaps
+    return (seis_p=Array(seis_p),
+        seis_vx=Array(seis_vx),
+        seis_vz=Array(seis_vz),
+        snaps=snaps,
+        stats=(kernel_time_s=Float64(elapsed),))
 end
 
 """
@@ -134,7 +164,7 @@ end
 function _acoustic2d_loop!(W, M, S, R, B,
     a_static, dt, nt, inner_nx, inner_nz, pad,
     nbc, nx, nz, qx, qz, qt_x, qt_z, qxt,
-    seis_vx, seis_vz, snaps, snap_interval, boundary::Symbol)
+    seis_p, seis_vx, seis_vz, snaps, snap_interval, boundary::Symbol)
     snap_idx = 1
 
     for it in 1:nt
@@ -168,6 +198,7 @@ function _acoustic2d_loop!(W, M, S, R, B,
         inject_source!(W.p, S, it, dt)
 
         # ── D. Record receivers ──
+        record_receivers!(seis_p, W.p, R, it)
         record_receivers!(seis_vx, W.vx, R, it)
         record_receivers!(seis_vz, W.vz, R, it)
 

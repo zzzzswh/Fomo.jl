@@ -30,9 +30,11 @@ end
 function _compute_staggered_buoyancy(rho::Matrix{Float32})
     nx, nz = size(rho)
 
+    # vx 位于 (i-1/2, j)（由差分模板 dpdx = p[i]-p[i-1] 确定）：
+    # 用 rho[i-1,j] 与 rho[i,j] 的调和平均
     buoy_vx = zeros(Float32, nx, nz)
-    @inbounds for j in 1:nz, i in 1:nx-1
-        rho1, rho2 = rho[i, j], rho[i+1, j]
+    @inbounds for j in 1:nz, i in 2:nx
+        rho1, rho2 = rho[i-1, j], rho[i, j]
         if rho1 == 0.0f0 && rho2 == 0.0f0
             buoy_vx[i, j] = 0.0f0
         elseif rho1 == 0.0f0
@@ -43,8 +45,9 @@ function _compute_staggered_buoyancy(rho::Matrix{Float32})
             buoy_vx[i, j] = 2.0f0 / (rho1 + rho2)
         end
     end
-    buoy_vx[nx, :] .= buoy_vx[nx-1, :]
+    buoy_vx[1, :] .= buoy_vx[2, :]
 
+    # vz 位于 (i, j+1/2)（由 dpdz = p[j+1]-p[j] 确定）：rho[i,j] 与 rho[i,j+1]（原实现即正确）
     buoy_vz = zeros(Float32, nx, nz)
     @inbounds for j in 1:nz-1, i in 1:nx
         rho1, rho2 = rho[i, j], rho[i, j+1]

@@ -4,7 +4,7 @@ using CUDA
 using StaticArrays
 
 """
-    elastic2d(vp, vs, rho, dh, dt, nt, f0; kwargs...) -> (seis_vx, seis_vz, snaps)
+    elastic2d(vp, vs, rho, dh, dt, nt, f0; kwargs...) -> NamedTuple
 
 2D 弹性波模拟，一步到位。
 
@@ -13,17 +13,30 @@ using StaticArrays
 - `dh`: 网格间距 (m)
 - `dt`: 时间步长 (s)
 - `nt`: 时间步数
-- `f0`: 震源主频 (Hz)
+- `f0`: 震源主频 (Hz)（用于默认 Ricker 子波与频散检查）
 
 # 关键字参数
-- `sx, sz`: 震源坐标向量
-- `rx, rz`: 接收器坐标向量
-- `nbc`: 吸收边界层数 (default: 50)
+- `sx, sz`: 震源坐标向量（网格索引；爆炸源，注入 τxx+τzz）
+- `rx, rz`: 接收器坐标向量（网格索引）
+- `nbc`: 吸收边界层数 (default: 50)，有效吸收区为 nbc + fd_order÷2
 - `fd_order`: 有限差分阶数 (default: 8)
 - `snap_interval`: 快照间隔，0=不保存 (default: 0)
 - `boundary`: 吸收边界类型 `:habc`（默认）或 `:sponge`（Cerjan）
 - `v_ref`: HABC 参考速度 (default: 自动取 minimum(vp[vp.>0])，sponge 时忽略)
+  注意：velocity-stress 格式中 P/S 共存于同一组场，无法按波型分设参考速度，
+  S 波吸收相对 P 波略差是单一 v_ref 的固有折中
 - `sponge_factor`: Cerjan sponge 衰减系数 (default: 0.015，HABC 时忽略)
+- `wavelet`: 自定义震源子波（长度 nt 的向量；default: nothing → Ricker(f0)）
+- `verbose`: 是否打印进度日志 (default: true)
+
+# 返回（NamedTuple）
+- `seis_vx`: [n_rec × nt] 水平速度记录
+- `seis_vz`: [n_rec × nt] 垂直速度记录
+- `snaps`:   vz 快照序列
+- `stats`:   `(kernel_time_s=...,)` GPU 主循环耗时（warmup 后）
+
+# 场的交错位置（对比外部软件时注意半格偏移）
+- τxx/τzz: (i, j)；vx: (i−1/2, j)；vz: (i, j+1/2)；τxz: (i−1/2, j+1/2)
 """
 function elastic2d(
     vp::Matrix{Float32}, vs::Matrix{Float32}, rho::Matrix{Float32},
@@ -36,12 +49,20 @@ function elastic2d(
     fd_order::Int=8,
     snap_interval::Int=0,
     boundary::Symbol=:habc,
-    v_ref::Float32=minimum(vp[vp.>0.0f0]),
+    v_ref::Float32=Float32(minimum(x for x in vp if x > 0.0f0)),
     sponge_factor::Float32=0.015f0,
+    wavelet::Union{Nothing,AbstractVector{<:Real}}=nothing,
+    verbose::Bool=true,
 )
     boundary in (:habc, :sponge) ||
         throw(ArgumentError("boundary must be :habc or :sponge, got $boundary"))
     nx, nz = size(vp)
+
+    # ── 参数校验（弹性的频散由最短 S 波长控制）──
+    _check_geometry(nx, nz, sx, sz, rx, rz)
+    vmin_disp = any(x -> x > 0.0f0, vs) ? minimum(x for x in vs if x > 0.0f0) :
+                minimum(x for x in vp if x > 0.0f0)
+    _check_numerics(maximum(vp), vmin_disp, dh, dt, f0, fd_order)
 
     # ── 有限差分系数 ──
     a_static = get_fd_coefficients(fd_order)
@@ -59,9 +80,11 @@ function elastic2d(
         bc = init_sponge(nx, nz, medium.pad, nbc; factor=sponge_factor)
     end
 
-    # ── 震源 ──
-    wavelet_data = ricker_wavelet(f0, dt, nt)
-    wavelet_matrix = reshape(wavelet_data, 1, nt)
+    # ── 震源：默认 Ricker，可传自定义子波；多源按行展开 ──
+    wavelet_data = isnothing(wavelet) ? ricker_wavelet(f0, dt, nt) : Float32.(wavelet)
+    length(wavelet_data) == nt ||
+        throw(ArgumentError("wavelet 长度 $(length(wavelet_data)) ≠ nt=$nt"))
+    wavelet_matrix = repeat(reshape(wavelet_data, 1, nt), length(sx), 1)
     source = init_source(medium.pad, Int32.(sx), Int32.(sz), wavelet_matrix)
 
     # ── 接收器 ──
@@ -88,7 +111,7 @@ function elastic2d(
     nz_pad = Int32(medium.nz)
 
     # ── Warmup: 1 步触发 JIT ──
-    @info "Warming up kernels..."
+    verbose && @info "Warming up kernels..."
     _elastic2d_loop!(W, medium, source, receiver, bc,
         a_static, dt, 1, inner_nx, inner_nz, pad,
         seis_vx, seis_vz, snaps, 0, boundary, nx_pad, nz_pad)
@@ -100,15 +123,18 @@ function elastic2d(
     fill!(seis_vz, 0.0f0)
 
     # ── Run ──
-    @info "Starting elastic2d simulation... (nx=$nx, nz=$nz, nt=$nt, boundary=$boundary)"
+    verbose && @info "Starting elastic2d simulation... (nx=$nx, nz=$nz, nt=$nt, boundary=$boundary)"
     elapsed = CUDA.@elapsed begin
         _elastic2d_loop!(W, medium, source, receiver, bc,
             a_static, dt, nt, inner_nx, inner_nz, pad,
             seis_vx, seis_vz, snaps, snap_interval, boundary, nx_pad, nz_pad)
     end
-    @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
+    verbose && @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
 
-    return Array(seis_vx), Array(seis_vz), snaps
+    return (seis_vx=Array(seis_vx),
+        seis_vz=Array(seis_vz),
+        snaps=snaps,
+        stats=(kernel_time_s=Float64(elapsed),))
 end
 
 """

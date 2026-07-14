@@ -58,9 +58,9 @@ function _update_velocity_3d_cuda!(
             dtzzdz += c * (tzz[i, j, k+l] - tzz[i, j, k-l+1])
 
             # ── 剪切应力对各方向的导数 ──
-            # ∂txy/∂y (txy在(i+1/2, j+1/2)位置，对y用backward stencil)
-            dtxydy += c * (txy[i, j+l-1, k] - txy[i, j-l, k])
-            # ∂txy/∂x (txy在(i+1/2, j+1/2)位置，对x用forward stencil)
+            # ∂txy/∂y：txy 位于 (i-1/2, j-1/2, k)，txy[i,j+1]-txy[i,j] 中心恰在 vx 的 y=j
+            dtxydy += c * (txy[i, j+l, k] - txy[i, j-l+1, k])
+            # ∂txy/∂x：txy[i+1,j]-txy[i,j] 中心在 x=i，恰为 vy 的 x 位置
             dtxydx += c * (txy[i+l, j, k] - txy[i-l+1, j, k])
 
             # ∂txz/∂z (txz在(i+1/2, k+1/2)位置，与2D同)

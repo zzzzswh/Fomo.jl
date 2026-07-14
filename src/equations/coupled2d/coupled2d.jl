@@ -17,7 +17,7 @@ using CUDA
 using StaticArrays
 
 """
-    coupled2d(vp, vs, dh, dt, nt, f0; kwargs...) -> (seis_P, seis_S, snaps_P, snaps_S)
+    coupled2d(vp, vs, dh, dt, nt, f0; kwargs...) -> NamedTuple
 
 2D 耦合 P-S 势场模拟（常密度 ρ=1）。
 
@@ -40,12 +40,15 @@ using StaticArrays
   平滑后的 α,β 用于计算 ∇α,∇β,∇²α,∇²β（耦合/散射项），
   原始 α,β 用于传播项（α∇²P, β∇²S），保留传播精度。
   设为 0.0 可关闭平滑（仅适用于本身已光滑的模型）。
+- `wavelet`: 自定义震源子波（长度 nt 的向量；default: nothing → Ricker(f0)）
+- `verbose`: 是否打印进度日志 (default: true)
 
-# 返回
+# 返回（NamedTuple）
 - `seis_P`: [n_rec × nt] P 势场地震记录
 - `seis_S`: [n_rec × nt] S 势场地震记录
 - `snaps_P`: P 势场快照序列
 - `snaps_S`: S 势场快照序列
+- `stats`:  `(kernel_time_s=...,)` GPU 主循环耗时（warmup 后）
 """
 function coupled2d(
     vp::Matrix{Float32}, vs::Matrix{Float32},
@@ -57,11 +60,19 @@ function coupled2d(
     nbc::Int=50,
     fd_order::Int=8,
     snap_interval::Int=0,
-    v_ref_p::Float32=minimum(vp[vp.>0.0f0]),
-    v_ref_s::Float32=minimum(vs[vs.>0.0f0]),
-    smooth_sigma::Float64=3.0
+    v_ref_p::Float32=Float32(minimum(x for x in vp if x > 0.0f0)),
+    v_ref_s::Float32=Float32(minimum(x for x in vs if x > 0.0f0)),
+    smooth_sigma::Float64=3.0,
+    wavelet::Union{Nothing,AbstractVector{<:Real}}=nothing,
+    verbose::Bool=true,
 )
     nx, nz = size(vp)
+
+    # ── 参数校验（正则网格中心差分的 CFL；频散由最短 S 波长控制）──
+    _check_geometry(nx, nz, sx, sz, rx, rz)
+    vmin_disp = any(x -> x > 0.0f0, vs) ? minimum(x for x in vs if x > 0.0f0) :
+                minimum(x for x in vp if x > 0.0f0)
+    _check_numerics_centered(maximum(vp), vmin_disp, dh, dt, f0, fd_order)
 
     # ── 有限差分系数（正则网格中心差分）──
     d1 = get_centered_d1(fd_order)
@@ -77,9 +88,11 @@ function coupled2d(
     habc_p = init_habc(nx, nz, medium.pad, dt, dh, v_ref_p)
     habc_s = init_habc(nx, nz, medium.pad, dt, dh, v_ref_s)
 
-    # ── 震源 ──
-    wavelet_data = ricker_wavelet(f0, dt, nt)
-    wavelet_matrix = reshape(wavelet_data, 1, nt)
+    # ── 震源：默认 Ricker，可传自定义子波；多源按行展开 ──
+    wavelet_data = isnothing(wavelet) ? ricker_wavelet(f0, dt, nt) : Float32.(wavelet)
+    length(wavelet_data) == nt ||
+        throw(ArgumentError("wavelet 长度 $(length(wavelet_data)) ≠ nt=$nt"))
+    wavelet_matrix = repeat(reshape(wavelet_data, 1, nt), length(sx), 1)
     source = init_source(medium.pad, Int32.(sx), Int32.(sz), wavelet_matrix)
 
     # ── 接收器 ──
@@ -123,7 +136,7 @@ function coupled2d(
     qxt_s  = Float32(habc_s.qxt)
 
     # ── Warmup ──
-    @info "Warming up coupled2d kernels..."
+    verbose && @info "Warming up coupled2d kernels..."
     _coupled2d_loop!(W, medium, source, receiver,
         d1, d2, d2_c0, dt, 1, inner_nx, inner_nz, pad,
         habc_p, habc_s,
@@ -139,7 +152,7 @@ function coupled2d(
     fill!(seis_S, 0.0f0)
 
     # ── Run ──
-    @info "Starting coupled2d simulation... (nx=$nx, nz=$nz, nt=$nt)"
+    verbose && @info "Starting coupled2d simulation... (nx=$nx, nz=$nz, nt=$nt)"
     elapsed = CUDA.@elapsed begin
         _coupled2d_loop!(W, medium, source, receiver,
             d1, d2, d2_c0, dt, nt, inner_nx, inner_nz, pad,
@@ -149,9 +162,13 @@ function coupled2d(
             qx_s, qz_s, qt_x_s, qt_z_s, qxt_s,
             seis_P, seis_S, snaps_P, snaps_S, snap_interval)
     end
-    @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
+    verbose && @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
 
-    return Array(seis_P), Array(seis_S), snaps_P, snaps_S
+    return (seis_P=Array(seis_P),
+        seis_S=Array(seis_S),
+        snaps_P=snaps_P,
+        snaps_S=snaps_S,
+        stats=(kernel_time_s=Float64(elapsed),))
 end
 
 """

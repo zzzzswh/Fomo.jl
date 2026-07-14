@@ -56,10 +56,10 @@ function _update_stress_3d_cuda!(
             dvydy += c * (vy[i, j+l, k]   - vy[i, j-l+1, k])
             dvzdz += c * (vz[i, j, k+l-1] - vz[i, j, k-l])
 
-            # ── txy 位置的导数 ──
-            # ∂vx/∂y (vx在(i+1/2,j)，对y用forward stencil)
-            dvxdy += c * (vx[i, j+l, k]   - vx[i, j-l+1, k])
-            # ∂vy/∂x (vy在(i,j+1/2)，对x用backward stencil)
+            # ── txy 位置 (i-1/2, j-1/2, k) 的导数 ──
+            # ∂vx/∂y：vx 位于 (i-1/2, j)，vx[i,j]-vx[i,j-1] 中心在 (i-1/2, j-1/2)
+            dvxdy += c * (vx[i, j+l-1, k] - vx[i, j-l, k])
+            # ∂vy/∂x：vy 位于 (i, j-1/2)，vy[i,j]-vy[i-1,j] 中心在 (i-1/2, j-1/2)
             dvydx += c * (vy[i+l-1, j, k] - vy[i-l, j, k])
 
             # ── txz 位置的导数（与2D dvxdz, dvzdx 同模板）──

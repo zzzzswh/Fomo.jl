@@ -65,10 +65,10 @@ end
 """
 3D弹性波参数计算：lam, mu_txx, mu_txy, mu_txz, mu_tyz, lam_2mu
 
-mu在剪切应力位置需要调和平均：
-  - mu_txy: 在 (i,j) 和 (i+1,j+1) 之间，xy平面4点调和平均
-  - mu_txz: 在 (i,k) 和 (i+1,k+1) 之间，xz平面4点调和平均
-  - mu_tyz: 在 (j,k) 和 (j+1,k+1) 之间，yz平面4点调和平均
+mu在剪切应力位置需要调和平均（位置由差分模板确定，x/y 为 backward、z 为 forward 交错）：
+  - mu_txy: txy 位于 (i-1/2, j-1/2, k)，xy平面4点调和平均 (i-1..i, j-1..j)
+  - mu_txz: txz 位于 (i-1/2, j, k+1/2)，xz平面4点调和平均 (i-1..i, k..k+1)
+  - mu_tyz: tyz 位于 (i, j-1/2, k+1/2)，yz平面4点调和平均 (j-1..j, k..k+1)
 """
 function _compute_elastic_params_3d(vp, vs, rho)
     nx, ny, nz = size(vp)
@@ -77,46 +77,46 @@ function _compute_elastic_params_3d(vp, vs, rho)
     lam     = Float32.(rho .* vp .^ 2 .- 2.0f0 .* mu)
     lam_2mu = Float32.(lam .+ 2.0f0 .* mu)
 
-    # mu_txy: xy平面调和平均 (i,j), (i+1,j), (i,j+1), (i+1,j+1)
+    # mu_txy: txy 位于 (i-1/2, j-1/2, k)，xy平面调和平均 (i-1,j-1), (i,j-1), (i-1,j), (i,j)
     mu_txy = zeros(Float32, nx, ny, nz)
-    @inbounds for k in 1:nz, j in 1:ny-1, i in 1:nx-1
-        m1 = mu[i, j, k]; m2 = mu[i+1, j, k]
-        m3 = mu[i, j+1, k]; m4 = mu[i+1, j+1, k]
+    @inbounds for k in 1:nz, j in 2:ny, i in 2:nx
+        m1 = mu[i-1, j-1, k]; m2 = mu[i, j-1, k]
+        m3 = mu[i-1, j, k]; m4 = mu[i, j, k]
         if m1 == 0.0f0 || m2 == 0.0f0 || m3 == 0.0f0 || m4 == 0.0f0
             mu_txy[i, j, k] = 0.0f0
         else
             mu_txy[i, j, k] = 4.0f0 / (1.0f0/m1 + 1.0f0/m2 + 1.0f0/m3 + 1.0f0/m4)
         end
     end
-    mu_txy[nx, :, :] .= mu_txy[nx-1, :, :]
-    mu_txy[:, ny, :] .= mu_txy[:, ny-1, :]
+    mu_txy[1, :, :] .= mu_txy[2, :, :]
+    mu_txy[:, 1, :] .= mu_txy[:, 2, :]
 
-    # mu_txz: xz平面调和平均 (i,k), (i+1,k), (i,k+1), (i+1,k+1)
+    # mu_txz: txz 位于 (i-1/2, j, k+1/2)，xz平面调和平均 (i-1,k), (i,k), (i-1,k+1), (i,k+1)
     mu_txz = zeros(Float32, nx, ny, nz)
-    @inbounds for k in 1:nz-1, j in 1:ny, i in 1:nx-1
-        m1 = mu[i, j, k]; m2 = mu[i+1, j, k]
-        m3 = mu[i, j, k+1]; m4 = mu[i+1, j, k+1]
+    @inbounds for k in 1:nz-1, j in 1:ny, i in 2:nx
+        m1 = mu[i-1, j, k]; m2 = mu[i, j, k]
+        m3 = mu[i-1, j, k+1]; m4 = mu[i, j, k+1]
         if m1 == 0.0f0 || m2 == 0.0f0 || m3 == 0.0f0 || m4 == 0.0f0
             mu_txz[i, j, k] = 0.0f0
         else
             mu_txz[i, j, k] = 4.0f0 / (1.0f0/m1 + 1.0f0/m2 + 1.0f0/m3 + 1.0f0/m4)
         end
     end
-    mu_txz[nx, :, :] .= mu_txz[nx-1, :, :]
+    mu_txz[1, :, :] .= mu_txz[2, :, :]
     mu_txz[:, :, nz] .= mu_txz[:, :, nz-1]
 
-    # mu_tyz: yz平面调和平均 (j,k), (j+1,k), (j,k+1), (j+1,k+1)
+    # mu_tyz: tyz 位于 (i, j-1/2, k+1/2)，yz平面调和平均 (j-1,k), (j,k), (j-1,k+1), (j,k+1)
     mu_tyz = zeros(Float32, nx, ny, nz)
-    @inbounds for k in 1:nz-1, j in 1:ny-1, i in 1:nx
-        m1 = mu[i, j, k]; m2 = mu[i, j+1, k]
-        m3 = mu[i, j, k+1]; m4 = mu[i, j+1, k+1]
+    @inbounds for k in 1:nz-1, j in 2:ny, i in 1:nx
+        m1 = mu[i, j-1, k]; m2 = mu[i, j, k]
+        m3 = mu[i, j-1, k+1]; m4 = mu[i, j, k+1]
         if m1 == 0.0f0 || m2 == 0.0f0 || m3 == 0.0f0 || m4 == 0.0f0
             mu_tyz[i, j, k] = 0.0f0
         else
             mu_tyz[i, j, k] = 4.0f0 / (1.0f0/m1 + 1.0f0/m2 + 1.0f0/m3 + 1.0f0/m4)
         end
     end
-    mu_tyz[:, ny, :] .= mu_tyz[:, ny-1, :]
+    mu_tyz[:, 1, :] .= mu_tyz[:, 2, :]
     mu_tyz[:, :, nz] .= mu_tyz[:, :, nz-1]
 
     return lam, mu, mu_txy, mu_txz, mu_tyz, lam_2mu

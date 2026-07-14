@@ -37,10 +37,10 @@ end
 function _compute_staggered_buoyancy_3d(rho::Array{Float32,3})
     nx, ny, nz = size(rho)
 
-    # buoy_vx: x方向交错 (i, i+1)
+    # buoy_vx: vx 位于 (i-1/2, j, k)（由 dpdx = p[i]-p[i-1] 确定），x方向交错 (i-1, i)
     buoy_vx = zeros(Float32, nx, ny, nz)
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx-1
-        rho1, rho2 = rho[i, j, k], rho[i+1, j, k]
+    @inbounds for k in 1:nz, j in 1:ny, i in 2:nx
+        rho1, rho2 = rho[i-1, j, k], rho[i, j, k]
         if rho1 == 0.0f0 && rho2 == 0.0f0
             buoy_vx[i, j, k] = 0.0f0
         elseif rho1 == 0.0f0
@@ -51,12 +51,12 @@ function _compute_staggered_buoyancy_3d(rho::Array{Float32,3})
             buoy_vx[i, j, k] = 2.0f0 / (rho1 + rho2)
         end
     end
-    buoy_vx[nx, :, :] .= buoy_vx[nx-1, :, :]
+    buoy_vx[1, :, :] .= buoy_vx[2, :, :]
 
-    # buoy_vy: y方向交错 (j, j+1)
+    # buoy_vy: vy 位于 (i, j-1/2, k)（由 dpdy = p[j]-p[j-1] 确定），y方向交错 (j-1, j)
     buoy_vy = zeros(Float32, nx, ny, nz)
-    @inbounds for k in 1:nz, j in 1:ny-1, i in 1:nx
-        rho1, rho2 = rho[i, j, k], rho[i, j+1, k]
+    @inbounds for k in 1:nz, j in 2:ny, i in 1:nx
+        rho1, rho2 = rho[i, j-1, k], rho[i, j, k]
         if rho1 == 0.0f0 && rho2 == 0.0f0
             buoy_vy[i, j, k] = 0.0f0
         elseif rho1 == 0.0f0
@@ -67,9 +67,9 @@ function _compute_staggered_buoyancy_3d(rho::Array{Float32,3})
             buoy_vy[i, j, k] = 2.0f0 / (rho1 + rho2)
         end
     end
-    buoy_vy[:, ny, :] .= buoy_vy[:, ny-1, :]
+    buoy_vy[:, 1, :] .= buoy_vy[:, 2, :]
 
-    # buoy_vz: z方向交错 (k, k+1)
+    # buoy_vz: vz 位于 (i, j, k+1/2)（由 dpdz = p[k+1]-p[k] 确定），z方向交错 (k, k+1)（原实现即正确）
     buoy_vz = zeros(Float32, nx, ny, nz)
     @inbounds for k in 1:nz-1, j in 1:ny, i in 1:nx
         rho1, rho2 = rho[i, j, k], rho[i, j, k+1]

@@ -56,17 +56,18 @@ function _compute_elastic_params(vp, vs, rho)
     lam = Float32.(rho .* vp .^ 2 .- 2.0f0 .* mu)
     lam_2mu = Float32.(lam .+ 2.0f0 .* mu)
 
-    # mu 在 txz 位置的调和平均
+    # mu 在 txz 位置 (i-1/2, j+1/2) 的调和平均
+    # （txz 位置由模板确定：dvxdz = vx[j+1]-vx[j]、dvzdx = vz[i]-vz[i-1] 均落在 (i-1/2, j+1/2)）
     mu_txz = zeros(Float32, nx, nz)
-    @inbounds for j in 1:nz-1, i in 1:nx-1
-        m1, m2, m3, m4 = mu[i, j], mu[i+1, j], mu[i, j+1], mu[i+1, j+1]
+    @inbounds for j in 1:nz-1, i in 2:nx
+        m1, m2, m3, m4 = mu[i-1, j], mu[i, j], mu[i-1, j+1], mu[i, j+1]
         if m1 == 0.0f0 || m2 == 0.0f0 || m3 == 0.0f0 || m4 == 0.0f0
             mu_txz[i, j] = 0.0f0
         else
             mu_txz[i, j] = 4.0f0 / (1.0f0 / m1 + 1.0f0 / m2 + 1.0f0 / m3 + 1.0f0 / m4)
         end
     end
-    mu_txz[nx, :] .= mu_txz[nx-1, :]
+    mu_txz[1, :] .= mu_txz[2, :]
     mu_txz[:, nz] .= mu_txz[:, nz-1]
 
     return lam, mu, mu_txz, lam_2mu

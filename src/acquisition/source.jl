@@ -17,6 +17,8 @@ end
 """
 function init_source(pad::Int, sx::Vector{Int32}, sz::Vector{Int32},
     wavelet_matrix::AbstractMatrix{Float32})
+    size(wavelet_matrix, 1) == length(sx) ||
+        throw(ArgumentError("wavelet 行数 $(size(wavelet_matrix, 1)) ≠ 震源个数 $(length(sx))"))
     sx_pad = sx .+ Int32(pad)
     sz_pad = sz .+ Int32(pad)
     return SourceConfig(
