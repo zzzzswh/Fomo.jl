@@ -45,24 +45,25 @@ It also introduces a **novel coupled P-S potential solver**, derived from the wo
 
 ## Features
 
-- **Acoustic & Elastic 2D/3D** — Full support for both acoustic (pressure-velocity) and elastic (stress-velocity) formulations
+- **Acoustic & Elastic, 2D & 3D** — Full support for both acoustic (pressure-velocity) and elastic (stress-velocity) formulations, with dedicated 2D and 3D solvers
 - **🆕 Coupled P-S Potential 2D** — A novel solver based on Li et al. (2018) that directly propagates separated P- and S-wave potentials with natural mode decomposition (see [details below](#the-coupled-p-s-potential-solver))
 - **Staggered Grid Finite Differences** — Up to 10th-order spatial accuracy for minimal numerical dispersion
-- **Hybrid Absorbing Boundary (HABC)** — Combines one-way wave equations with exponential damping (Liu Yang); better absorption than traditional PML at significantly lower computational cost
+- **Hybrid Absorbing Boundary (HABC)** — Combines one-way wave equations with exponential damping (Liu Yang); better absorption than traditional PML at significantly lower computational cost. A classic Cerjan sponge boundary is also available via `boundary=:sponge` (see `example/benchmark/` for a comparison)
 - **Vacuum Free Surface** — Models realistic free surfaces at arbitrary locations via the vacuum method (zero velocity and density)
+- **Input Validation** — Source/receiver geometry and CFL stability are checked before any kernel launch (hard error on violation), with a warning when the grid under-samples the shortest wavelength
 - **GPU Acceleration** — Built on [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) for high-performance computation on NVIDIA GPUs
-- **Built-in Visualization** — Shot-record plotting and wavefield animation export out of the box
+- **Built-in Visualization** — Shot-record plotting and wavefield animation export, loaded lazily as a package extension when you `using Plots` (so `using Fomo` stays fast)
 
 ## Installation
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/Wuheng10086/Fomo.jl")
+Pkg.add(url="https://github.com/zzzzswh/Fomo.jl")
 ```
 
 ## Quick Start
 
-Three solvers share the same calling convention. Expand an example below to get started:
+All solvers share the same calling style. Expand an example below to get started:
 
 <details open>
 <summary><b>Acoustic 2D</b></summary>
@@ -181,6 +182,46 @@ res = coupled2d(vp, vs, dh, dt, nt, f0;
 
 </details>
 
+<details>
+<summary><b>Acoustic & Elastic 3D</b></summary>
+
+```julia
+using CUDA
+using Fomo
+
+# Grid parameters
+nx, ny, nz = 101, 101, 101
+dh = 10.0f0
+dt = 0.001f0
+nt = 500
+f0 = 15.0f0
+
+# 3D velocity model
+vp  = fill(3000.0f0, nx, ny, nz)
+rho = fill(2000.0f0, nx, ny, nz)
+
+# Source at the model center; receiver line along x
+sx = [nx ÷ 2]; sy = [ny ÷ 2]; sz = [nz ÷ 2]
+rx = collect(1:nx)
+ry = fill(ny ÷ 2, nx)
+rz = fill(nz ÷ 2, nx)
+
+# Forward modeling — 3D solvers return a plain tuple
+seis_vx, seis_vy, seis_vz, snaps = acoustic3d(vp, rho, dh, dt, nt, f0;
+    sx, sy, sz, rx, ry, rz,
+    nbc=50, fd_order=8,
+    snap_interval=50,
+    snap_plane=:xz,     # snapshot slice plane: :xy, :xz, or :yz
+    snap_index=ny ÷ 2)  # slice index along the remaining axis
+
+# Elastic 3D works the same way — just add vs:
+# vs = fill(1700.0f0, nx, ny, nz)
+# seis_vx, seis_vy, seis_vz, snaps = elastic3d(vp, vs, rho, dh, dt, nt, f0;
+#     sx, sy, sz, rx, ry, rz, nbc=50, fd_order=8)
+```
+
+</details>
+
 ### Example Output: Shot Record
 
 <p align="center">
@@ -193,21 +234,36 @@ res = coupled2d(vp, vs, dh, dt, nt, f0;
 
 | Function | Description |
 |---|---|
-| `acoustic2d(vp, rho, dh, dt, nt, f0; ...)` | Acoustic wave equation forward modeling |
-| `elastic2d(vp, vs, rho, dh, dt, nt, f0; ...)` | Elastic wave equation forward modeling |
-| `coupled2d(vp, vs, dh, dt, nt, f0; ...)` | 🆕 Coupled P-S potential forward modeling |
+| `acoustic2d(vp, rho, dh, dt, nt, f0; ...)` | 2D acoustic wave equation |
+| `elastic2d(vp, vs, rho, dh, dt, nt, f0; ...)` | 2D elastic wave equation |
+| `coupled2d(vp, vs, dh, dt, nt, f0; ...)` | 🆕 2D coupled P-S potential |
+| `acoustic3d(vp, rho, dh, dt, nt, f0; ...)` | 3D acoustic wave equation |
+| `elastic3d(vp, vs, rho, dh, dt, nt, f0; ...)` | 3D elastic wave equation |
 
-**Common keyword arguments:**
+**Common keyword arguments (all solvers):**
 
 | Argument | Default | Description |
 |---|---|---|
-| `sx, sz` | — | Source positions (grid indices) |
-| `rx, rz` | — | Receiver positions (grid indices) |
+| `sx, sz` (+ `sy` in 3D) | — | Source positions (grid indices) |
+| `rx, rz` (+ `ry` in 3D) | — | Receiver positions (grid indices) |
 | `nbc` | `50` | Number of absorbing boundary grid points |
 | `fd_order` | `8` | Finite difference order (2, 4, 6, 8, or 10) |
 | `snap_interval` | `0` | Snapshot interval (0 = no snapshots) |
+
+**All 2D solvers (`acoustic2d` / `elastic2d` / `coupled2d`):**
+
+| Argument | Default | Description |
+|---|---|---|
 | `wavelet` | `nothing` | Custom source wavelet (length-`nt` vector; `nothing` → Ricker(f0)) |
 | `verbose` | `true` | Print progress logs |
+
+**`acoustic2d` / `elastic2d` only:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `boundary` | `:habc` | Absorbing boundary type: `:habc` or `:sponge` (Cerjan) |
+| `v_ref` | `min(vp)` | HABC reference velocity (ignored for `:sponge`) |
+| `sponge_factor` | `0.015` | Cerjan damping factor (ignored for `:habc`) |
 
 **`coupled2d` additional keyword arguments:**
 
@@ -215,11 +271,21 @@ res = coupled2d(vp, vs, dh, dt, nt, f0;
 |---|---|---|
 | `v_ref_p` | `min(vp)` | HABC reference velocity for P-field |
 | `v_ref_s` | `min(vs)` | HABC reference velocity for S-field |
+| `smooth_sigma` | `3.0` | Gaussian smoothing σ (in grid points) applied to α, β for the coupling/scattering terms (∇α, ∇β, ∇²α, ∇²β); the propagation terms use the raw model. Set `0.0` to disable |
 
-**Returns (NamedTuple):**
-- `acoustic2d` → `(; seis_p, seis_vx, seis_vz, snaps, stats)`
-- `elastic2d` → `(; seis_vx, seis_vz, snaps, stats)`
-- `coupled2d` → `(; seis_P, seis_S, snaps_P, snaps_S, stats)`
+**`acoustic3d` / `elastic3d` additional keyword arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `snap_plane` | `:xz` | Snapshot slice plane: `:xy`, `:xz`, or `:yz` |
+| `snap_index` | `ny ÷ 2` | Slice index along the axis normal to `snap_plane` |
+| `v_ref` | `min(vp)` | HABC reference velocity |
+
+**Returns:**
+- `acoustic2d` → NamedTuple `(; seis_p, seis_vx, seis_vz, snaps, stats)`
+- `elastic2d` → NamedTuple `(; seis_vx, seis_vz, snaps, stats)`
+- `coupled2d` → NamedTuple `(; seis_P, seis_S, snaps_P, snaps_S, stats)`
+- `acoustic3d` / `elastic3d` → plain tuple `(seis_vx, seis_vy, seis_vz, snaps)`; snapshots are 2D slices (pressure for acoustic, `vz` for elastic) taken at `snap_plane` / `snap_index`
 - `stats.kernel_time_s`: GPU main-loop time (after in-call warmup)
 
 **Staggered field positions** (mind the half-cell offsets when comparing with other codes):
@@ -233,6 +299,8 @@ res = coupled2d(vp, vs, dh, dt, nt, f0;
 | `trace_norm(data; dims)` | Trace-by-trace normalization |
 | `plot_shot(data, filename)` | Save a shot record figure |
 | `plot_wavefield_video(snaps, interval, filename; fps, adaptive_clims)` | Export wavefield animation as video |
+
+> `plot_shot` and `plot_wavefield_video` live in a package extension — run `using Plots` first to load them.
 
 ## The Coupled P-S Potential Solver
 
@@ -280,10 +348,12 @@ With **two HABC applications per time step**, the scheme achieves a **second-ord
 
 ## Numerical Method
 
-Fomo implements three wave equation solvers:
+Fomo implements three families of wave equation solvers:
 
-- **Acoustic & Elastic** — Standard staggered-grid velocity-stress scheme (Virieux, 1986) with up to 10th-order FD operators, second-order leapfrog time stepping, and HABC absorbing boundaries (Liu Yang).
-- **Coupled P-S Potential** — Based on the coupled second-order potential equations of Li et al. (2018), decomposed into a velocity-position split that is structurally isomorphic to the velocity-stress scheme (see [above](#the-coupled-p-s-potential-solver) for details). Uses centered (non-staggered) FD operators on a regular grid.
+- **Acoustic & Elastic (2D and 3D)** — Standard staggered-grid velocity-stress scheme (Virieux, 1986) with up to 10th-order FD operators, second-order leapfrog time stepping, and HABC absorbing boundaries (Liu Yang). The 2D solvers can alternatively use a Cerjan sponge boundary (`boundary=:sponge`).
+- **Coupled P-S Potential (2D)** — Based on the coupled second-order potential equations of Li et al. (2018), decomposed into a velocity-position split that is structurally isomorphic to the velocity-stress scheme (see [above](#the-coupled-p-s-potential-solver) for details). Uses centered (non-staggered) FD operators on a regular grid.
+
+All entry points validate source/receiver geometry and the CFL stability condition before launching any GPU kernel (throwing an error on violation), and issue a warning when the grid under-samples the shortest wavelength (dispersion risk).
 
 ## Requirements
 
@@ -295,10 +365,12 @@ Fomo implements three wave equation solvers:
 
 - **Li, Y. E., Du, Y., Yang, J., Cheng, A., & Fang, X. (2018).** Elastic reverse time migration using acoustic propagators. *Geophysics*, 83(5), S399–S408. doi: [10.1190/GEO2017-0687.1](https://doi.org/10.1190/GEO2017-0687.1)
 - **Virieux, J. (1986).** P-SV wave propagation in heterogeneous media: Velocity-stress finite-difference method. *Geophysics*, 51(4), 889–901.
+- **Cerjan, C., Kosloff, D., Kosloff, R., & Reshef, M. (1985).** A nonreflecting boundary condition for discrete acoustic and elastic wave equations. *Geophysics*, 50(4), 705–708.
 
 ## Acknowledgments
 
 - Hybrid Absorbing Boundary Condition: based on the work of Prof. Liu Yang
+- Sponge absorbing boundary: Cerjan et al. (1985)
 - Staggered grid FD formulation: Virieux (1986)
 - Coupled P-S potential equations: Li et al. (2018)
 

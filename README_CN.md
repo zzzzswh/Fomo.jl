@@ -14,7 +14,7 @@
   <img src="wavefield.gif" alt="弹性波波场模拟" width="600">
 </p>
 
-Fomo 是一个基于 CUDA 的二维波动方程模拟器，采用交错网格高阶有限差分方法求解声波方程和弹性波方程。虽然最初为地震波模拟而开发，但同样适用于任何涉及声波或弹性波传播的场景——地震正演，超声检测、无损探伤、医学成像、水声学等。
+Fomo 是一个基于 CUDA 的二维/三维波动方程模拟器，采用交错网格高阶有限差分方法求解声波方程和弹性波方程。虽然最初为地震波模拟而开发，但同样适用于任何涉及声波或弹性波传播的场景——地震正演、超声检测、无损探伤、医学成像、水声学等。
 
 本工具还引入了一个全新的**耦合 P-S 势场求解器**，源自李云月（Yunyue Elita Li）教授的工作（Li et al., 2018），可传播天然分离的 P 波与 S 波势场并实现显式的模式分解——详见[下方说明](#耦合-p-s-势场求解器)。
 
@@ -45,24 +45,25 @@ Fomo 是一个基于 CUDA 的二维波动方程模拟器，采用交错网格高
 
 ## 特性
 
-- **声波 & 弹性波 2D/3D** — 同时支持声波（压力-速度）和弹性波（应力-速度）方程
+- **声波 & 弹性波，2D & 3D** — 同时支持声波（压力-速度）和弹性波（应力-速度）方程，2D 与 3D 均有独立求解器
 - **🆕 耦合 P-S 势场 2D** — 基于 Li et al. (2018) 的新型求解器，直接传播天然分离的 P 波和 S 波势场（详见[下方说明](#耦合-p-s-势场求解器)）
 - **交错网格有限差分** — 最高支持 10 阶空间精度，有效压制数值频散
-- **混合吸收边界条件 (HABC)** — 结合单程波方程与指数衰减（刘洋教授）；相比传统 PML 吸收更优，计算开销显著更低
+- **混合吸收边界条件 (HABC)** — 结合单程波方程与指数衰减（刘洋教授）；相比传统 PML 吸收更优，计算开销显著更低。另提供经典 Cerjan sponge 边界（`boundary=:sponge`，对比测试见 `example/benchmark/`）
 - **Vacuum 自由表面** — 通过 vacuum 方法（速度和密度置零）在介质内任意位置模拟真实自由表面
+- **入口参数校验** — 启动 GPU 核函数前检查震源/检波器几何越界与 CFL 稳定性（违反直接报错），并在最短波长采样不足时给出频散警告
 - **GPU 加速** — 基于 [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl)，在 NVIDIA GPU 上实现高性能计算
-- **内置可视化** — 开箱即用的炮记录绘图与波场动画导出
+- **内置可视化** — 炮记录绘图与波场动画导出，以 package extension 形式在 `using Plots` 时按需加载（`using Fomo` 本体保持轻量快速）
 
 ## 安装
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/Wuheng10086/Fomo.jl")
+Pkg.add(url="https://github.com/zzzzswh/Fomo.jl")
 ```
 
 ## 快速开始
 
-三种求解器共享相同的调用方式，展开下方示例即可上手：
+各求解器共享一致的调用方式，展开下方示例即可上手：
 
 <details open>
 <summary><b>声波 2D</b></summary>
@@ -91,13 +92,15 @@ sx = [nx ÷ 2];       sz = [10]
 rx = collect(1:2:nx); rz = fill(10, length(rx))
 
 # 正演模拟
-vx, vz, snaps = acoustic2d(vp, rho, dh, dt, nt, f0;
+res = acoustic2d(vp, rho, dh, dt, nt, f0;
     sx, sz, rx, rz,
     nbc=100, fd_order=8, snap_interval=50)
+# res.seis_p / res.seis_vx / res.seis_vz / res.snaps / res.stats.kernel_time_s
 
-# 可视化
-plot_shot(trace_norm(vz, dims=2), "acoustic_vz.png")
-plot_wavefield_video(snaps, 50, "acoustic_wavefield.mp4",
+# 可视化（需先 `using Plots` 以加载绘图扩展）
+using Plots
+plot_shot(trace_norm(res.seis_vz, dims=2), "acoustic_vz.png")
+plot_wavefield_video(res.snaps, 50, "acoustic_wavefield.mp4",
     fps=10, adaptive_clims=true)
 ```
 
@@ -131,13 +134,15 @@ sx = [nx ÷ 2];       sz = [10]
 rx = collect(1:2:nx); rz = fill(10, length(rx))
 
 # 正演模拟
-vx, vz, snaps = elastic2d(vp, vs, rho, dh, dt, nt, f0;
+res = elastic2d(vp, vs, rho, dh, dt, nt, f0;
     sx, sz, rx, rz,
     nbc=100, fd_order=8, snap_interval=50)
+# res.seis_vx / res.seis_vz / res.snaps / res.stats.kernel_time_s
 
-# 可视化
-plot_shot(trace_norm(vz, dims=2), "elastic_vz.png")
-plot_wavefield_video(snaps, 50, "elastic_wavefield.mp4",
+# 可视化（需先 `using Plots` 以加载绘图扩展）
+using Plots
+plot_shot(trace_norm(res.seis_vz, dims=2), "elastic_vz.png")
+plot_wavefield_video(res.snaps, 50, "elastic_wavefield.mp4",
     fps=10, adaptive_clims=true)
 ```
 
@@ -167,12 +172,52 @@ sx = [nx ÷ 2];       sz = [10]
 rx = collect(1:2:nx); rz = fill(10, length(rx))
 
 # 正演模拟 —— 返回天然分离的 P 和 S 势场
-seis_P, seis_S, snaps_P, snaps_S = coupled2d(vp, vs, dh, dt, nt, f0;
+res = coupled2d(vp, vs, dh, dt, nt, f0;
     sx, sz, rx, rz,
     nbc=100, fd_order=8, snap_interval=50)
 
-# seis_P: P 波势场记录（包含 PP 反射）
-# seis_S: S 波势场记录（包含 PS 转换波 —— 仅在 Vs 不连续处产生！）
+# res.seis_P: P 波势场记录（包含 PP 反射）
+# res.seis_S: S 波势场记录（包含 PS 转换波 —— 仅在 Vs 不连续处产生！）
+```
+
+</details>
+
+<details>
+<summary><b>声波 & 弹性波 3D</b></summary>
+
+```julia
+using CUDA
+using Fomo
+
+# 网格参数
+nx, ny, nz = 101, 101, 101
+dh = 10.0f0
+dt = 0.001f0
+nt = 500
+f0 = 15.0f0
+
+# 3D 速度模型
+vp  = fill(3000.0f0, nx, ny, nz)
+rho = fill(2000.0f0, nx, ny, nz)
+
+# 震源置于模型中心；检波器沿 x 方向排列
+sx = [nx ÷ 2]; sy = [ny ÷ 2]; sz = [nz ÷ 2]
+rx = collect(1:nx)
+ry = fill(ny ÷ 2, nx)
+rz = fill(nz ÷ 2, nx)
+
+# 正演模拟 —— 3D 求解器返回普通元组
+seis_vx, seis_vy, seis_vz, snaps = acoustic3d(vp, rho, dh, dt, nt, f0;
+    sx, sy, sz, rx, ry, rz,
+    nbc=50, fd_order=8,
+    snap_interval=50,
+    snap_plane=:xz,     # 快照切片方向：:xy、:xz 或 :yz
+    snap_index=ny ÷ 2)  # 沿剩余轴的切片索引
+
+# 弹性波 3D 用法相同 —— 只需加上 vs：
+# vs = fill(1700.0f0, nx, ny, nz)
+# seis_vx, seis_vy, seis_vz, snaps = elastic3d(vp, vs, rho, dh, dt, nt, f0;
+#     sx, sy, sz, rx, ry, rz, nbc=50, fd_order=8)
 ```
 
 </details>
@@ -189,19 +234,36 @@ seis_P, seis_S, snaps_P, snaps_S = coupled2d(vp, vs, dh, dt, nt, f0;
 
 | 函数 | 说明 |
 |---|---|
-| `acoustic2d(vp, rho, dh, dt, nt, f0; ...)` | 声波方程正演模拟 |
-| `elastic2d(vp, vs, rho, dh, dt, nt, f0; ...)` | 弹性波方程正演模拟 |
-| `coupled2d(vp, vs, dh, dt, nt, f0; ...)` | 🆕 耦合 P-S 势场正演模拟 |
+| `acoustic2d(vp, rho, dh, dt, nt, f0; ...)` | 2D 声波方程正演 |
+| `elastic2d(vp, vs, rho, dh, dt, nt, f0; ...)` | 2D 弹性波方程正演 |
+| `coupled2d(vp, vs, dh, dt, nt, f0; ...)` | 🆕 2D 耦合 P-S 势场正演 |
+| `acoustic3d(vp, rho, dh, dt, nt, f0; ...)` | 3D 声波方程正演 |
+| `elastic3d(vp, vs, rho, dh, dt, nt, f0; ...)` | 3D 弹性波方程正演 |
 
-**通用关键字参数：**
+**通用关键字参数（所有求解器）：**
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `sx, sz` | — | 震源位置（网格索引） |
-| `rx, rz` | — | 检波器位置（网格索引） |
+| `sx, sz`（3D 另加 `sy`） | — | 震源位置（网格索引） |
+| `rx, rz`（3D 另加 `ry`） | — | 检波器位置（网格索引） |
 | `nbc` | `50` | 吸收边界层网格点数 |
 | `fd_order` | `8` | 有限差分阶数（2, 4, 6, 8 或 10） |
 | `snap_interval` | `0` | 波场快照间隔（0 = 不保存快照） |
+
+**所有 2D 求解器（`acoustic2d` / `elastic2d` / `coupled2d`）：**
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `wavelet` | `nothing` | 自定义震源子波（长度 `nt` 的向量；`nothing` → Ricker(f0)） |
+| `verbose` | `true` | 是否打印进度日志 |
+
+**仅 `acoustic2d` / `elastic2d`：**
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `boundary` | `:habc` | 吸收边界类型：`:habc` 或 `:sponge`（Cerjan） |
+| `v_ref` | `min(vp)` | HABC 参考速度（`:sponge` 时忽略） |
+| `sponge_factor` | `0.015` | Cerjan 衰减系数（`:habc` 时忽略） |
 
 **`coupled2d` 额外关键字参数：**
 
@@ -209,10 +271,25 @@ seis_P, seis_S, snaps_P, snaps_S = coupled2d(vp, vs, dh, dt, nt, f0;
 |---|---|---|
 | `v_ref_p` | `min(vp)` | P 场 HABC 参考速度 |
 | `v_ref_s` | `min(vs)` | S 场 HABC 参考速度 |
+| `smooth_sigma` | `3.0` | 介质参数高斯平滑标准差（网格点数）；平滑后的 α、β 用于耦合/散射项（∇α, ∇β, ∇²α, ∇²β），传播项仍用原始模型。设为 `0.0` 可关闭 |
+
+**`acoustic3d` / `elastic3d` 额外关键字参数：**
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `snap_plane` | `:xz` | 快照切片方向：`:xy`、`:xz` 或 `:yz` |
+| `snap_index` | `ny ÷ 2` | 垂直于 `snap_plane` 方向的切片索引 |
+| `v_ref` | `min(vp)` | HABC 参考速度 |
 
 **返回值：**
-- `acoustic2d` / `elastic2d` → `(vx_record, vz_record, snapshots)`
-- `coupled2d` → `(P_record, S_record, P_snapshots, S_snapshots)`
+- `acoustic2d` → NamedTuple `(; seis_p, seis_vx, seis_vz, snaps, stats)`
+- `elastic2d` → NamedTuple `(; seis_vx, seis_vz, snaps, stats)`
+- `coupled2d` → NamedTuple `(; seis_P, seis_S, snaps_P, snaps_S, stats)`
+- `acoustic3d` / `elastic3d` → 普通元组 `(seis_vx, seis_vy, seis_vz, snaps)`；快照为 2D 切片（声波取压力场，弹性波取 `vz`），位置由 `snap_plane` / `snap_index` 决定
+- `stats.kernel_time_s`：GPU 主循环耗时（不含调用内 warmup）
+
+**场的交错位置**（与其他软件对比时注意半格偏移）：
+`p`/`τxx`/`τzz` 位于 `(i, j)`，`vx` 位于 `(i−1/2, j)`，`vz` 位于 `(i, j+1/2)`，`τxz` 位于 `(i−1/2, j+1/2)`。
 
 ### 工具函数
 
@@ -222,6 +299,8 @@ seis_P, seis_S, snaps_P, snaps_S = coupled2d(vp, vs, dh, dt, nt, f0;
 | `trace_norm(data; dims)` | 逐道归一化 |
 | `plot_shot(data, filename)` | 保存炮记录图 |
 | `plot_wavefield_video(snaps, interval, filename; fps, adaptive_clims)` | 导出波场动画视频 |
+
+> `plot_shot` 与 `plot_wavefield_video` 位于 package extension 中——需先 `using Plots` 才可用。
 
 ## 耦合 P-S 势场求解器
 
@@ -269,10 +348,12 @@ $$\ddot{\mathbf{S}} = \nabla\beta\cdot\nabla\mathbf{S} - (\nabla\beta)\times(\na
 
 ## 数值方法
 
-Fomo 实现了三种波动方程求解器：
+Fomo 实现了三类波动方程求解器：
 
-- **声波 & 弹性波** — 标准交错网格 velocity-stress 方案（Virieux, 1986），最高支持 10 阶 FD 算子，二阶蛙跳时间推进，HABC 吸收边界（刘洋教授）。
-- **耦合 P-S 势场** — 基于 Li et al. (2018) 的耦合二阶势场方程，分解为与 velocity-stress 方案结构同构的速度-位置分裂格式（详见[上文](#耦合-p-s-势场求解器)）。使用正则网格上的中心差分算子（非交错）。
+- **声波 & 弹性波（2D 与 3D）** — 标准交错网格 velocity-stress 方案（Virieux, 1986），最高支持 10 阶 FD 算子，二阶蛙跳时间推进，HABC 吸收边界（刘洋教授）。2D 求解器还可选用 Cerjan sponge 边界（`boundary=:sponge`）。
+- **耦合 P-S 势场（2D）** — 基于 Li et al. (2018) 的耦合二阶势场方程，分解为与 velocity-stress 方案结构同构的速度-位置分裂格式（详见[上文](#耦合-p-s-势场求解器)）。使用正则网格上的中心差分算子（非交错）。
+
+所有入口在启动 GPU 核函数前都会校验震源/检波器几何与 CFL 稳定性条件（违反直接抛出错误），并在网格对最短波长采样不足时发出频散风险警告。
 
 ## 环境要求
 
@@ -284,10 +365,12 @@ Fomo 实现了三种波动方程求解器：
 
 - **Li, Y. E., Du, Y., Yang, J., Cheng, A., & Fang, X. (2018).** Elastic reverse time migration using acoustic propagators. *Geophysics*, 83(5), S399–S408. doi: [10.1190/GEO2017-0687.1](https://doi.org/10.1190/GEO2017-0687.1)
 - **Virieux, J. (1986).** P-SV wave propagation in heterogeneous media: Velocity-stress finite-difference method. *Geophysics*, 51(4), 889–901.
+- **Cerjan, C., Kosloff, D., Kosloff, R., & Reshef, M. (1985).** A nonreflecting boundary condition for discrete acoustic and elastic wave equations. *Geophysics*, 50(4), 705–708.
 
 ## 致谢
 
 - 混合吸收边界条件：基于刘洋教授的工作
+- Sponge 吸收边界：Cerjan et al. (1985)
 - 交错网格有限差分格式：Virieux (1986)
 - 耦合 P-S 势场方程：Li et al. (2018)
 
