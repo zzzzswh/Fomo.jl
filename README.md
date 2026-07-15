@@ -36,6 +36,7 @@ It also introduces a **novel coupled P-S potential solver**, derived from the wo
     - [Implementation: Velocity-Position Split with Second-Order HABC](#implementation-velocity-position-split-with-second-order-habc)
     - [Advantages over Conventional Elastic Solver](#advantages-over-conventional-elastic-solver)
   - [Performance \& Reproducibility](#performance--reproducibility)
+    - [Cross-code validation](#cross-code-validation)
   - [Numerical Method](#numerical-method)
   - [Requirements](#requirements)
   - [References](#references)
@@ -413,6 +414,25 @@ Throughput measured on an RTX 3060 (Float32, HABC, `fd_order=8`, `nbc=50`, media
 | 2000×1600 | ~1,300 | ~4,100 | — |
 
 For constant-density acoustic work on large (bandwidth-bound) grids, `scalar2d` is the recommended solver: it moves ~1/3 the memory per step of the first-order formulation. Verification scripts live in `test/`: `verify_det_graph.jl` (determinism + CUDA-Graph bit-exactness), `verify_batch.jl` (per-shot bit-exactness of batching), `verify_scalar.jl` (scalar scheme vs a race-free CPU reference + grid self-convergence), `compare_fused*.jl` (kernel-fusion equivalence vs the legacy kernel sequence), and `bench_*.jl` for throughput.
+
+### Cross-code validation
+
+Fomo is validated against **deepwave** (GPU finite-difference) and **SPECFEM2D**
+(spectral-element, used as the accuracy reference) on one shared velocity model,
+acquisition geometry, and source, in a standalone reproducible benchmark:
+**[wavebench](https://github.com/zzzzswh/wavebench)**.
+
+- **Accuracy** — Fomo matches the spectral-element reference: acoustic pressure
+  median trace correlation ~0.998 (L2 ~7%); elastic `vx`/`vz` ~0.95-0.99; zero
+  traveltime lag.
+- **Efficiency** — For constant-density acoustic on large (bandwidth-bound) grids,
+  the default variable-density `acoustic2d` (first-order velocity-stress) is
+  ~2.4-2.6x slower than deepwave's second-order `scalar`. This is a *formulation*
+  cost — velocity-stress moves ~3x the memory per step — not an implementation gap:
+  the formulation-matched `scalar2d` is on par with (slightly faster than) deepwave,
+  and the elastic solvers (both velocity-stress) are on par across all grid sizes.
+
+See the wavebench repo for the full method, figures, and one-command reproduction.  
 
 ## Numerical Method
 
