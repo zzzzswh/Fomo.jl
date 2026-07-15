@@ -28,6 +28,10 @@ using StaticArrays
 - `v_ref`: HABC 参考速度 (default: 自动取 minimum(vp[vp.>0])，sponge 时忽略)
 - `sponge_factor`: Cerjan sponge 衰减系数 (default: 0.015，HABC 时忽略)
 - `wavelet`: 自定义震源子波（长度 nt 的向量；default: nothing → Ricker(f0)）
+- `scale_source_by_dt`: 注入前将子波乘以 dt，使震源振幅在改变 dt 时保持物理一致
+  （default: false，保持旧版振幅约定；与 deepwave 对比振幅时建议 true）
+- `use_cuda_graph`: HABC 且无快照时将整个时间步录制为 CUDA Graph，每步仅 1 次
+  graph launch（default: true；capture 失败自动回退融合循环，结果不变）
 - `verbose`: 是否打印进度日志 (default: true)
 
 # 返回（NamedTuple）
@@ -54,6 +58,8 @@ function acoustic2d(
     v_ref::Float32=Float32(minimum(x for x in vp if x > 0.0f0)),
     sponge_factor::Float32=0.015f0,
     wavelet::Union{Nothing,AbstractVector{<:Real}}=nothing,
+    scale_source_by_dt::Bool=false,
+    use_cuda_graph::Bool=true,
     verbose::Bool=true,
 )
     boundary in (:habc, :sponge) ||
@@ -86,6 +92,8 @@ function acoustic2d(
     length(wavelet_data) == nt ||
         throw(ArgumentError("wavelet 长度 $(length(wavelet_data)) ≠ nt=$nt"))
     wavelet_matrix = repeat(reshape(wavelet_data, 1, nt), length(sx), 1)
+    # 可选：按 dt 缩放震源，使振幅在改变 dt 时物理一致（对齐 deepwave 的做法）
+    scale_source_by_dt && (wavelet_matrix .*= dt)
     source = init_source(medium.pad, Int32.(sx), Int32.(sz), wavelet_matrix)
 
     # ── 接收器 ──
@@ -129,10 +137,23 @@ function acoustic2d(
 
     # ── Warmup ──
     verbose && @info "Warming up kernels..."
-    _acoustic2d_loop!(W, medium, source, receiver, bc,
-        a_static, dt, 1, inner_nx, inner_nz, pad,
-        nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
-        seis_p, seis_vx, seis_vz, snaps, 0, boundary)
+    use_graph = (boundary === :habc) && snap_interval == 0 && use_cuda_graph
+    if use_graph
+        _acoustic2d_loop_graph!(W, medium, source, receiver, bc,
+            a_static, dt, 1, pad,
+            nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
+            seis_p, seis_vx, seis_vz)
+    elseif boundary === :habc
+        _acoustic2d_loop_fused!(W, medium, source, receiver, bc,
+            a_static, dt, 1, pad,
+            nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
+            seis_p, seis_vx, seis_vz, snaps, 0)
+    else
+        _acoustic2d_loop!(W, medium, source, receiver, bc,
+            a_static, dt, 1, inner_nx, inner_nz, pad,
+            nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
+            seis_p, seis_vx, seis_vz, snaps, 0, boundary)
+    end
     CUDA.synchronize()
 
     # ── Reset ──
@@ -144,10 +165,22 @@ function acoustic2d(
     # ── Run ──
     verbose && @info "Starting acoustic2d simulation... (nx=$nx, nz=$nz, nt=$nt, boundary=$boundary)"
     elapsed = CUDA.@elapsed begin
-        _acoustic2d_loop!(W, medium, source, receiver, bc,
-            a_static, dt, nt, inner_nx, inner_nz, pad,
-            nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
-            seis_p, seis_vx, seis_vz, snaps, snap_interval, boundary)
+        if use_graph
+            _acoustic2d_loop_graph!(W, medium, source, receiver, bc,
+                a_static, dt, nt, pad,
+                nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
+                seis_p, seis_vx, seis_vz)
+        elseif boundary === :habc
+            _acoustic2d_loop_fused!(W, medium, source, receiver, bc,
+                a_static, dt, nt, pad,
+                nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
+                seis_p, seis_vx, seis_vz, snaps, snap_interval)
+        else
+            _acoustic2d_loop!(W, medium, source, receiver, bc,
+                a_static, dt, nt, inner_nx, inner_nz, pad,
+                nbc_i, nx_i, nz_i, qx, qz, qt_x, qt_z, qxt,
+                seis_p, seis_vx, seis_vz, snaps, snap_interval, boundary)
+        end
     end
     verbose && @info "Simulation complete! GPU time: $(round(elapsed, digits=3))s"
 

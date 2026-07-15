@@ -35,6 +35,7 @@ It also introduces a **novel coupled P-S potential solver**, derived from the wo
     - [Theory](#theory)
     - [Implementation: Velocity-Position Split with Second-Order HABC](#implementation-velocity-position-split-with-second-order-habc)
     - [Advantages over Conventional Elastic Solver](#advantages-over-conventional-elastic-solver)
+  - [Performance \& Reproducibility](#performance--reproducibility)
   - [Numerical Method](#numerical-method)
   - [Requirements](#requirements)
   - [References](#references)
@@ -51,6 +52,9 @@ It also introduces a **novel coupled P-S potential solver**, derived from the wo
 - **Hybrid Absorbing Boundary (HABC)** — Combines one-way wave equations with exponential damping (Liu Yang); better absorption than traditional PML at significantly lower computational cost. A classic Cerjan sponge boundary is also available via `boundary=:sponge` (see `example/benchmark/` for a comparison)
 - **Vacuum Free Surface** — Models realistic free surfaces at arbitrary locations via the vacuum method (zero velocity and density)
 - **Input Validation** — Source/receiver geometry and CFL stability are checked before any kernel launch (hard error on violation), with a warning when the grid under-samples the shortest wavelength
+- **🆕 Second-Order Scalar Solver** — `scalar2d` solves the constant-density scalar wave equation with ~1/3 the memory traffic of the first-order formulation: 2.5–3× faster on bandwidth-bound grids (the same formulation as deepwave's `scalar`)
+- **🆕 Multi-Shot Batching** — `acoustic2d_batch` / `elastic2d_batch` propagate `n_shots` simultaneously in one GPU pass; each shot is bit-identical to its single-shot run
+- **🆕 Fast & Deterministic Engine** — Fused CUDA kernels + CUDA Graphs (one graph launch per time step, up to ~2.6× on small/medium grids), and a deterministic two-pass HABC that makes results bit-reproducible across runs and GPUs (see [Performance & Reproducibility](#performance--reproducibility))
 - **GPU Acceleration** — Built on [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) for high-performance computation on NVIDIA GPUs
 - **Built-in Visualization** — Shot-record plotting and wavefield animation export, loaded lazily as a package extension when you `using Plots` (so `using Fomo` stays fast)
 
@@ -222,6 +226,35 @@ seis_vx, seis_vy, seis_vz, snaps = acoustic3d(vp, rho, dh, dt, nt, f0;
 
 </details>
 
+<details>
+<summary><b>Scalar 2D & Multi-Shot Batching 🆕</b></summary>
+
+```julia
+using CUDA
+using Fomo
+
+nx, nz = 500, 400
+dh, dt, nt, f0 = 10.0f0, 0.001f0, 2000, 15.0f0
+vp  = fill(2500.0f0, nx, nz)
+rho = fill(2000.0f0, nx, nz)
+rx = collect(1:2:nx); rz = fill(10, length(rx))
+
+# Second-order scalar (constant density): ~1/3 the memory traffic of the
+# first-order path — the same formulation as deepwave's `scalar`
+res = scalar2d(vp, dh, dt, nt, f0;
+    sx=[nx ÷ 2], sz=[10], rx, rz)
+# res.seis_u :: (n_rec, nt)
+
+# Many shots in one GPU pass (shared receiver spread, per-shot sources).
+# NOTE: here a vector means ONE SOURCE PER SHOT — unlike the single-shot
+# API, where a vector lists multiple sources within a single shot.
+res = acoustic2d_batch(vp, rho, dh, dt, nt, f0;
+    sx=[100, 250, 400], sz=fill(10, 3), rx, rz)
+# res.seis_p :: (n_rec, nt, 3); each shot is bit-identical to a single-shot run
+```
+
+</details>
+
 ### Example Output: Shot Record
 
 <p align="center">
@@ -236,6 +269,9 @@ seis_vx, seis_vy, seis_vz, snaps = acoustic3d(vp, rho, dh, dt, nt, f0;
 |---|---|
 | `acoustic2d(vp, rho, dh, dt, nt, f0; ...)` | 2D acoustic wave equation |
 | `elastic2d(vp, vs, rho, dh, dt, nt, f0; ...)` | 2D elastic wave equation |
+| `scalar2d(vp, dh, dt, nt, f0; ...)` | 🆕 2D second-order scalar (constant density), deepwave-`scalar`-equivalent formulation |
+| `acoustic2d_batch(vp, rho, dh, dt, nt, f0; ...)` | 🆕 2D acoustic, many shots per GPU pass |
+| `elastic2d_batch(vp, vs, rho, dh, dt, nt, f0; ...)` | 🆕 2D elastic, many shots per GPU pass |
 | `coupled2d(vp, vs, dh, dt, nt, f0; ...)` | 🆕 2D coupled P-S potential |
 | `acoustic3d(vp, rho, dh, dt, nt, f0; ...)` | 3D acoustic wave equation |
 | `elastic3d(vp, vs, rho, dh, dt, nt, f0; ...)` | 3D elastic wave equation |
@@ -264,6 +300,20 @@ seis_vx, seis_vy, seis_vz, snaps = acoustic3d(vp, rho, dh, dt, nt, f0;
 | `boundary` | `:habc` | Absorbing boundary type: `:habc` or `:sponge` (Cerjan) |
 | `v_ref` | `min(vp)` | HABC reference velocity (ignored for `:sponge`) |
 | `sponge_factor` | `0.015` | Cerjan damping factor (ignored for `:habc`) |
+| `scale_source_by_dt` | `false` | Multiply the wavelet by `dt` before injection, keeping the source amplitude physically consistent across `dt` (matches deepwave's convention) |
+| `use_cuda_graph` | `true` | With `boundary=:habc` and no snapshots, capture the whole time step as one CUDA Graph (auto-fallback to the fused loop if capture fails) |
+
+**`scalar2d` only** (boundary fixed to HABC; no snapshots):
+
+| Argument | Default | Description |
+|---|---|---|
+| `source_scale` | `:v2dt2` | Source scaling: `:v2dt2` (× v²·dt² at the source point, deepwave's convention), `:dt`, or `:none` |
+
+**`acoustic2d_batch` / `elastic2d_batch`** (boundary fixed to HABC; no snapshots; receivers shared across shots):
+
+| Argument | Default | Description |
+|---|---|---|
+| `sx, sz` | — | `(n_shots × n_src_per_shot)` integer matrix; a **vector means one source per shot** — note this differs from the single-shot API, where a vector lists multiple sources within one shot |
 
 **`coupled2d` additional keyword arguments:**
 
@@ -285,6 +335,9 @@ seis_vx, seis_vy, seis_vz, snaps = acoustic3d(vp, rho, dh, dt, nt, f0;
 - `acoustic2d` → NamedTuple `(; seis_p, seis_vx, seis_vz, snaps, stats)`
 - `elastic2d` → NamedTuple `(; seis_vx, seis_vz, snaps, stats)`
 - `coupled2d` → NamedTuple `(; seis_P, seis_S, snaps_P, snaps_S, stats)`
+- `scalar2d` → NamedTuple `(; seis_u, stats)`
+- `acoustic2d_batch` → NamedTuple `(; seis_p, seis_vx, seis_vz, stats)`, seismograms shaped `(n_rec, nt, n_shots)`
+- `elastic2d_batch` → NamedTuple `(; seis_vx, seis_vz, stats)`, same `(n_rec, nt, n_shots)` shape
 - `acoustic3d` / `elastic3d` → plain tuple `(seis_vx, seis_vy, seis_vz, snaps)`; snapshots are 2D slices (pressure for acoustic, `vz` for elastic) taken at `snap_plane` / `snap_index`
 - `stats.kernel_time_s`: GPU main-loop time (after in-call warmup)
 
@@ -346,12 +399,28 @@ With **two HABC applications per time step**, the scheme achieves a **second-ord
 | Imaging condition | Ad hoc phase correction needed | **Consistent with physical perturbations** |
 | Density | Arbitrary | Constant (ρ = const) |
 
+## Performance & Reproducibility
+
+On the HABC path, the 2D engine fuses each phase's boundary backup and PDE update into single kernels, runs boundary work on frame-mapped threads (zero idle lanes), and captures the whole time step as one **CUDA Graph** — one graph launch per step. The Higdon boundary correction uses a **deterministic two-pass scheme**, so results are **bit-reproducible** across runs, launch geometries, and GPUs; each shot in a batch is likewise bit-identical to its single-shot run.
+
+Throughput measured on an RTX 3060 (Float32, HABC, `fd_order=8`, `nbc=50`, medians of repeated runs; data-center GPUs scale further):
+
+| Grid | `acoustic2d` (steps/s) | `scalar2d` (steps/s) | `elastic2d` (steps/s) |
+|---|---|---|---|
+| 240×200 | ~25,000 | ~24,400 | ~17,000 |
+| 500×400 | ~11,800 | ~23,800 | ~7,700 |
+| 1000×800 | ~4,400 | ~11,800 | ~2,600 |
+| 2000×1600 | ~1,300 | ~4,100 | — |
+
+For constant-density acoustic work on large (bandwidth-bound) grids, `scalar2d` is the recommended solver: it moves ~1/3 the memory per step of the first-order formulation. Verification scripts live in `test/`: `verify_det_graph.jl` (determinism + CUDA-Graph bit-exactness), `verify_batch.jl` (per-shot bit-exactness of batching), `verify_scalar.jl` (scalar scheme vs a race-free CPU reference + grid self-convergence), `compare_fused*.jl` (kernel-fusion equivalence vs the legacy kernel sequence), and `bench_*.jl` for throughput.
+
 ## Numerical Method
 
-Fomo implements three families of wave equation solvers:
+Fomo implements four families of wave equation solvers:
 
 - **Acoustic & Elastic (2D and 3D)** — Standard staggered-grid velocity-stress scheme (Virieux, 1986) with up to 10th-order FD operators, second-order leapfrog time stepping, and HABC absorbing boundaries (Liu Yang). The 2D solvers can alternatively use a Cerjan sponge boundary (`boundary=:sponge`).
 - **Coupled P-S Potential (2D)** — Based on the coupled second-order potential equations of Li et al. (2018), decomposed into a velocity-position split that is structurally isomorphic to the velocity-stress scheme (see [above](#the-coupled-p-s-potential-solver) for details). Uses centered (non-staggered) FD operators on a regular grid.
+- **Second-Order Scalar (2D)** — Constant-density scalar wave equation on a regular grid: centered FD operators (up to 10th order), leapfrog time stepping, and the same deterministic HABC. This is the formulation used by deepwave's `scalar` solver, at ~1/3 the memory traffic of the first-order acoustic path.
 
 All entry points validate source/receiver geometry and the CFL stability condition before launching any GPU kernel (throwing an error on violation), and issue a warning when the grid under-samples the shortest wavelength (dispersion risk).
 
